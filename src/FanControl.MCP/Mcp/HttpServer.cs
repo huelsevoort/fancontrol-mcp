@@ -86,7 +86,8 @@ internal sealed class HttpServer : IDisposable
                 var request = await HttpRequest.ReadAsync(reader, idle.Token).ConfigureAwait(false);
                 if (request is null) return; // connection closed
 
-                var response = Handle(request);
+                var response = Handle(request, stream);
+                if (response is null) return; // answered as an SSE stream, which ends with the connection
                 await response.WriteAsync(stream, serverToken).ConfigureAwait(false);
                 if (!request.KeepAlive || response.Close) return;
             }
@@ -103,7 +104,7 @@ internal sealed class HttpServer : IDisposable
         }
     }
 
-    private HttpResponse Handle(HttpRequest request)
+    private HttpResponse? Handle(HttpRequest request, Stream stream)
     {
         // DNS rebinding protection required by the MCP spec: browsers always send Origin, local clients usually don't.
         if (request.Headers.TryGetValue("origin", out var origin) && !IsLocalOrigin(origin))
@@ -127,9 +128,10 @@ internal sealed class HttpServer : IDisposable
             case "POST":
                 break;
             case "GET":
-                // We never push server-initiated messages, so no SSE stream is offered.
+                // Server-to-client messages only travel on the response stream of a POST, so no standalone SSE stream.
                 return HttpResponse.Text(405, "SSE stream not supported", extraHeaders: [("Allow", "POST")]);
             case "DELETE":
+                if (request.Headers.TryGetValue("mcp-session-id", out var ended)) _protocol.EndSession(ended);
                 return new HttpResponse(200, "text/plain", []);
             case "OPTIONS":
                 return new HttpResponse(204, "text/plain", [], [("Allow", "POST, DELETE")]);
@@ -138,12 +140,49 @@ internal sealed class HttpServer : IDisposable
         }
 
         var body = Encoding.UTF8.GetString(request.Body);
-        var reply = _protocol.HandleRaw(body, out var protocolVersion);
+        request.Headers.TryGetValue("mcp-session-id", out var sessionId);
+        var isInitialize = body.Contains("\"initialize\"", StringComparison.Ordinal);
+        if (sessionId is not null && !isInitialize && !_protocol.KnowsSession(sessionId))
+            return HttpResponse.Text(404, "Unknown or expired MCP session; please re-initialize."); // e.g. after a FanControl restart
+
+        // Server-to-client requests (elicitation) switch this response to an SSE stream.
+        var sse = new SseWriter(stream);
+        var context = new McpCallContext { Session = _protocol.GetSession(sessionId), SendToClient = sse.Send };
+        var reply = _protocol.HandleRaw(body, context, out var protocolVersion, out var newSessionId);
+
+        if (sse.Started)
+        {
+            if (reply is not null) sse.Send(reply);
+            return null;
+        }
         var headers = new List<(string, string)>();
         if (protocolVersion is not null) headers.Add(("MCP-Protocol-Version", protocolVersion));
+        if (newSessionId is not null) headers.Add(("MCP-Session-Id", newSessionId));
         if (reply is null)
             return new HttpResponse(202, "text/plain", [], headers);
         return new HttpResponse(200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(reply), headers);
+    }
+
+    /// <summary>Lazily turns the current response into "text/event-stream" (closed with the connection).</summary>
+    private sealed class SseWriter(Stream stream)
+    {
+        private readonly object _lock = new();
+        public bool Started { get; private set; }
+
+        public void Send(string json)
+        {
+            lock (_lock)
+            {
+                if (!Started)
+                {
+                    var head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n";
+                    stream.Write(Encoding.ASCII.GetBytes(head));
+                    Started = true;
+                }
+                stream.Write(Encoding.UTF8.GetBytes($"event: message\ndata: {json}\n\n"));
+                stream.Flush();
+            }
+        }
     }
 
     private static bool IsLocalOrigin(string origin)

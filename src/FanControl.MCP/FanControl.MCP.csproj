@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     FanControl plugin that hosts a Model Context Protocol (MCP) server inside FanControl.
@@ -12,7 +12,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>FanControl.MCP</AssemblyName>
     <RootNamespace>FanControl.MCP</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>FanControl MCP Plugin</Product>
     <Description>Exposes FanControl sensors, controls and fan curves to AI assistants via the Model Context Protocol.</Description>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -41,6 +41,8 @@
   <ItemGroup>
     <!-- Tuning guides served as MCP resource / prompt / tool ("built-in skill"). -->
     <EmbeddedResource Include="Guides\*.md" LogicalName="FanControl.MCP.Guides.%(Filename)%(Extension)" />
+    <!-- MCP Apps view of the setup wizard (single self-contained HTML file). -->
+    <EmbeddedResource Include="Ui\*.html" LogicalName="FanControl.MCP.Ui.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

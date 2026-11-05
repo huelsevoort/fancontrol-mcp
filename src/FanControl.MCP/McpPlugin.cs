@@ -1,5 +1,6 @@
 using FanControl.MCP.Engine;
 using FanControl.MCP.Mcp;
+using FanControl.MCP.Wizard;
 using FanControl.Plugins;
 
 namespace FanControl.MCP;
@@ -19,6 +20,7 @@ public sealed class McpPlugin : IPlugin3, IEngineProvider
     private EngineBridge? _engine;
     private DateTime _lastLocateAttempt = DateTime.MinValue;
     private string _locateError = "not searched yet";
+    private WizardContext? _wizard;
 
     public McpPlugin(IPluginLogger logger)
     {
@@ -64,6 +66,8 @@ public sealed class McpPlugin : IPlugin3, IEngineProvider
         {
             _server?.Dispose();
             _server = null;
+            _wizard?.Recorder.Dispose();
+            _wizard = null;
             _engine = null;
             _lastLocateAttempt = DateTime.MinValue;
         }
@@ -110,8 +114,11 @@ public sealed class McpPlugin : IPlugin3, IEngineProvider
         {
             if (_server is not null || _settings is null) return;
             var version = typeof(McpPlugin).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
-            var protocol = new McpProtocol(FanControlTools.Create(this, _settings, _virtualSensors), "fancontrol-mcp", version, FanControlTools.Instructions, Log,
-                TuningSkill.Resources, TuningSkill.Prompts);
+            var dir = Path.GetDirectoryName(typeof(McpPlugin).Assembly.Location) ?? AppContext.BaseDirectory;
+            _wizard = new WizardContext(new SystemProfile(dir), new MeasurementRecorder(() => ((IEngineProvider)this).TryGetEngine(out _), Log));
+            var tools = FanControlTools.Create(this, _settings, _virtualSensors).Concat(WizardTools.Create(this, _settings, _wizard));
+            var protocol = new McpProtocol(tools, "fancontrol-mcp", version, FanControlTools.Instructions, Log,
+                TuningSkill.Resources.Append(WizardTools.UiResource), TuningSkill.Prompts);
             var server = new HttpServer(_settings.BindAddress, _settings.Port, _settings.AuthToken, protocol, Log);
             try
             {

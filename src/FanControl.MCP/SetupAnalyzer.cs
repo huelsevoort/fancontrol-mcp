@@ -29,7 +29,9 @@ internal static class SetupAnalyzer
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         // ---------------------------------------------------------- global: current temperatures
-        foreach (var s in sources.Values.Where(s => s.Value is not null && s.Kind is Kind.Cpu or Kind.Gpu or Kind.Liquid && !s.Smoothed))
+        foreach (var s in sources.Values.Where(s => s.Kind == Kind.Liquid && s.Value >= 50 && !s.Smoothed))
+            findings.Add(new(s.Value >= 55 ? "critical" : "warning", s.Name, "LIQUID_HOT", $"Liquid temperature {s.Value:0.#} °C.", "AIO/loop components are typically rated to 60 °C: check pump operation and radiator fans (should be near 100 % here)."));
+        foreach (var s in sources.Values.Where(s => s.Value is not null && s.Kind is Kind.Cpu or Kind.Gpu && !s.Smoothed))
         {
             if (s.Value >= Alarm(s.Kind))
                 findings.Add(new("warning", s.Name, "TEMP_HIGH", $"{s.Name} is at {s.Value:0.#} °C right now.",
@@ -170,7 +172,7 @@ internal static class SetupAnalyzer
             if (Bool(c, "manualControl"))
             {
                 var manual = Num(c, "manualPercent") ?? 0;
-                if (critical && manual < (role == Role.Pump ? 50 : 30))
+                if (critical && manual < (role == Role.Pump ? 60 : 30))
                     findings.Add(new("critical", target, "MANUAL_LOW", $"Fixed at {manual:0} % (manual) on a {role} output.", "Use an automatic curve (set_fan_automatic) or a higher fixed speed."));
                 else
                     findings.Add(new("info", target, "MANUAL", $"Fixed at {manual:0} % (manual); does not react to temperature.", "Switch back with set_fan_automatic when the test/override is over."));
@@ -198,8 +200,13 @@ internal static class SetupAnalyzer
             else if (floor <= 0.5 && start > 0 && info.MaxOut is not null)
                 findings.Add(new("info", target, "ZERO_RPM", $"Zero-RPM curve; fan restarts at {start:0} %.", "Fine for case/GPU fans if wanted; make sure the first non-zero point is ≥ the start value."));
 
-            if (role == Role.Pump && floor < 50)
-                findings.Add(new("warning", target, "PUMP_LOW", $"Pump can drop to {floor:0} %.", "Run pumps at a constant 60-100 % or on liquid temperature with a floor ≥ 50 %."));
+            if (role == Role.Pump && floor < 60)
+                findings.Add(new(floor <= 0.5 ? "critical" : "warning", target, "PUMP_LOW", $"Pump can drop to {floor:0} %.", "Pumps belong at a fixed speed: 100 % (NZXT/Arctic) or 70-80 % (e.g. Corsair), never below 60 % and never on a zero-RPM curve."));
+            else if (role == Role.Pump && info.MinOut is { } pMin && info.MaxOut is { } pMax && pMax - pMin > 5)
+                findings.Add(new("info", target, "PUMP_CURVE", $"Pump follows a curve ({pMin:0}-{pMax:0} %).", "A fixed pump speed is the vendor recommendation; let the radiator fans follow the liquid temperature instead."));
+
+            if (role == Role.Gpu && c["id"]?.ToString()?.Contains("nvapi", StringComparison.OrdinalIgnoreCase) == true && info.MinOut is { } gMin && gMin > 0.5 && gMin < 29.5)
+                findings.Add(new("warning", target, "NVIDIA_INVALID_RANGE", $"Curve goes down to {gMin:0} %; NVIDIA fans only accept 30-100 % (0 % = card's own fan-stop).", "Use ≥ 30 %, or 0 % below the card's stop temperature followed by a jump to ≥ 30 %."));
 
             if (role == Role.Radiator && info.Source is { Kind: Kind.Cpu })
                 findings.Add(new("warning", target, "RADIATOR_ON_CPU", $"Radiator fans follow CPU temperature ('{info.Source.Name}').", "Use the liquid/coolant temperature as source; it changes slowly and avoids constant ramping."));

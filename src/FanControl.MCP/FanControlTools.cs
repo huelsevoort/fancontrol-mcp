@@ -18,6 +18,9 @@ internal static class FanControlTools
         """
         This server controls FanControl (https://getfancontrol.com), the Windows fan control software, on the user's PC.
         Typical flow: call get_snapshot to see temperatures, fan speeds and controls, then act.
+        For a first-time or complete setup ("set up my fans", "optimise everything"), run the guided setup: setup_wizard ->
+        interview the user step by step -> save_system_profile -> propose_baseline_config -> confirm -> apply_baseline_config ->
+        validate under real load with start_measurement / mark_phase / get_measurement_summary -> save_config when the user agrees.
         Controls are the fan/pump outputs FanControl drives (0-100 %). A control either follows its fan curve
         (automatic) or a fixed manual percentage. Changes take effect within about a second but are NOT written to
         the configuration file until save_config is called; loading a config or restarting FanControl reverts them.
@@ -358,7 +361,7 @@ internal static class FanControlTools
 
     // ------------------------------------------------------------------ small helpers
 
-    private static class Schema
+    internal static class Schema
     {
         public static JsonObject Object(params (string Name, JsonObject Schema, bool Required)[] props)
         {
@@ -383,7 +386,7 @@ internal static class FanControlTools
         };
     }
 
-    private static class Arg
+    internal static class Arg
     {
         public static string String(JsonObject a, string name)
             => OptString(a, name) ?? throw new ToolException($"Missing argument '{name}'.");

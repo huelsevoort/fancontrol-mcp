@@ -140,7 +140,21 @@ try
     var guideTool = await Rpc("tools/call", new JsonObject { ["name"] = "get_fan_curve_guide", ["arguments"] = new JsonObject() });
     Check("get_fan_curve_guide returns plain markdown", guideTool?["result"]?["content"]?[0]?["text"]?.GetValue<string>().StartsWith("# FanControl") == true);
 
-    if (remote is null) AnalyzerTests();
+    if (remote is null) { AnalyzerTests(); WizardTests(); }
+
+    if (remote is not null && args.Contains("--elicit")) await ElicitationTest();
+
+    if (remote is not null)
+    {
+        var detect = await Call("detect_hardware");
+        Check("detect_hardware", detect?["structuredContent"]?["cpu"]?["name"] is not null, detect?["structuredContent"]?["cpu"]?["name"]?.ToString() ?? "");
+        var wizard = await Call("setup_wizard");
+        Check("setup_wizard has 7 steps", wizard?["structuredContent"]?["steps"]?.AsArray().Count == 7);
+        var plan = await Call("propose_baseline_config", new JsonObject { ["goal"] = "quiet_no_perf_loss" });
+        Check("propose_baseline_config", plan?["structuredContent"]?["actions"]?.AsArray().Count > 0 && plan?["structuredContent"]?["planId"] is not null);
+        var hw = await Call("list_hardware_sensors");
+        Check("list_hardware_sensors", hw?["isError"]?.GetValue<bool>() == false);
+    }
 
     if (remote is not null)
     {
@@ -228,6 +242,158 @@ finally
 
 Console.WriteLine(failures == 0 ? "\nALL PASSED" : $"\n{failures} FAILED");
 return failures == 0 ? 0 : 1;
+
+// Full elicitation round trip like Claude Code does it: session with form capability, tools/call answered as SSE,
+// server asks via elicitation/create, client answers with a separate POST, final result arrives on the stream.
+async Task ElicitationTest()
+{
+    using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    if (token is not null) client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+    var backup = await Call("get_system_profile");
+
+    var init = new HttpRequestMessage(HttpMethod.Post, url)
+    {
+        Content = new StringContent("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"elicit-test","version":"1"}}}""", Encoding.UTF8, "application/json"),
+    };
+    var initRes = await client.SendAsync(init);
+    var session = initRes.Headers.TryGetValues("MCP-Session-Id", out var ids) ? ids.First() : null;
+    Check("session id issued on initialize", session is not null, session ?? "");
+    if (session is null) return;
+
+    HttpRequestMessage Msg(string json) => new(HttpMethod.Post, url)
+    {
+        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        Headers = { { "MCP-Session-Id", session }, { "Accept", "application/json, text/event-stream" } },
+    };
+
+    var unknown = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, url)
+    {
+        Content = new StringContent("""{"jsonrpc":"2.0","id":2,"method":"ping"}""", Encoding.UTF8, "application/json"),
+        Headers = { { "MCP-Session-Id", "does-not-exist" } },
+    });
+    Check("unknown session -> 404", (int)unknown.StatusCode == 404, ((int)unknown.StatusCode).ToString());
+
+    var call = await client.SendAsync(Msg("""{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"setup_wizard_form","arguments":{"step":"goal"}}}"""), HttpCompletionOption.ResponseHeadersRead);
+    Check("tools/call answered as SSE", call.Content.Headers.ContentType?.MediaType == "text/event-stream", call.Content.Headers.ContentType?.ToString() ?? "");
+    using var sse = new StreamReader(await call.Content.ReadAsStreamAsync());
+
+    async Task<JsonNode?> NextEvent()
+    {
+        string? line;
+        while ((line = await sse.ReadLineAsync()) is not null)
+            if (line.StartsWith("data: ", StringComparison.Ordinal)) return JsonNode.Parse(line[6..]);
+        return null;
+    }
+
+    var ask = await NextEvent();
+    var schema = ask?["params"]?["requestedSchema"]?["properties"]?.AsObject();
+    Check("elicitation/create with goal form", ask?["method"]?.ToString() == "elicitation/create" && schema?.ContainsKey("goal_primary") == true,
+        string.Join(", ", schema?.Select(p => p.Key) ?? []));
+    var oneOf = schema?["goal_primary"]?["oneOf"]?.AsArray().Select(o => o?["const"]?.ToString()).ToList() ?? [];
+    Check("goal options as oneOf", oneOf.Contains("quiet_no_perf_loss") && oneOf.Contains("max_performance"));
+
+    var answer = new JsonObject
+    {
+        ["jsonrpc"] = "2.0", ["id"] = ask?["id"]?.DeepClone(),
+        ["result"] = new JsonObject { ["action"] = "accept", ["content"] = new JsonObject { ["goal_primary"] = "balanced", ["goal_annoyances"] = new JsonArray("ramping") } },
+    };
+    var posted = await client.SendAsync(Msg(answer.ToJsonString()));
+    Check("elicitation answer -> 202", (int)posted.StatusCode == 202, ((int)posted.StatusCode).ToString());
+
+    var final = await NextEvent();
+    var saved = final?["result"]?["structuredContent"]?["profile"]?["goal"];
+    Check("form answers saved into profile", saved?["primary"]?.ToString() == "balanced" && saved?["annoyances"]?[0]?.ToString() == "ramping", final?.ToJsonString()[..Math.Min(200, final.ToJsonString().Length)] ?? "");
+
+    // restore the user's profile as it was
+    await Call("save_system_profile", new JsonObject { ["reset"] = true, ["patch"] = backup?["structuredContent"]?.DeepClone() ?? new JsonObject() });
+}
+
+// Hardware detection + baseline planning on data shaped like a real system (Ryzen 9600X, RTX 2070, 4 case fans, air cooler).
+void WizardTests()
+{
+    var temps = JsonNode.Parse("""
+        [
+          {"id":"/amdcpu/0/temperature/2","name":"Core (Tctl/Tdie)","origin":"AMD Ryzen 5 9600X","value":72},
+          {"id":"/gpu-amd/0/temperature/0","name":"GPU Core","origin":"AMD Radeon(TM) Graphics","value":44},
+          {"id":"NVApiWrapper/0-TU106-A/sensor/0","name":"GPU","origin":"NVIDIA GeForce RTX 2070","value":69}
+        ]
+        """)!.AsArray();
+    var fans = JsonNode.Parse("""
+        [
+          {"id":"/lpc/nct6799d/fan/0","name":"Fan #1","value":1064},{"id":"/lpc/nct6799d/fan/1","name":"CPU","value":1278},
+          {"id":"/lpc/nct6799d/fan/2","name":"Front","value":1031},{"id":"/lpc/nct6799d/fan/3","name":"Fan #4","value":1065},
+          {"id":"/lpc/nct6799d/fan/5","name":"Fan #6","value":1030},{"id":"/lpc/nct6799d/fan/4","name":"Fan #5","value":0},
+          {"id":"NVApiWrapper/0-TU106-A/fan/0","name":"Fan 1 - NVIDIA GeForce RTX 2070","value":3040}
+        ]
+        """)!.AsArray();
+    var controls = JsonNode.Parse("""
+        [
+          {"id":"/lpc/nct6799d/control/2","name":"Intake Front","originalName":"Fan #3","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/2","start":16,"stop":7,"enabled":true},
+          {"id":"/lpc/nct6799d/control/5","name":"Intake Top","originalName":"Fan #6","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/5","start":16,"stop":7,"enabled":true},
+          {"id":"/lpc/nct6799d/control/3","name":"Exhaust Top","originalName":"Fan #4","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/3","start":16,"stop":7,"enabled":true},
+          {"id":"/lpc/nct6799d/control/0","name":"Exhaust Back","originalName":"Fan #1","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/0","start":16,"stop":7,"enabled":true},
+          {"id":"/lpc/nct6799d/control/1","name":"CPU","originalName":"Fan #2","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/1","start":0,"stop":0,"enabled":true},
+          {"id":"/lpc/nct6799d/control/4","name":"Fan #5","originalName":"Fan #5","origin":"ASUS TUF GAMING B650-PLUS WIFI","pairedFanSensorId":"/lpc/nct6799d/fan/4","enabled":false},
+          {"id":"NVApiWrapper/0-TU106-A/control/0","name":"Control 1 - NVIDIA GeForce RTX 2070","originalName":"Control 1 - NVIDIA GeForce RTX 2070","origin":"NVIDIA GeForce RTX 2070","start":32,"stop":32,"enabled":true}
+        ]
+        """)!.AsArray();
+
+    var detection = FanControl.MCP.Wizard.HardwareDetector.Detect(temps, fans, controls, [], ["explorer", "MSIAfterburner"]);
+    Check("detect: CPU name", detection["cpu"]?["name"]?.ToString() == "AMD Ryzen 5 9600X");
+    Check("detect: CPU family limits", detection["cpu"]?["limits"]?["family"]?.ToString() == "AMD Ryzen 7000/9000");
+    var dgpu = detection["gpus"]!.AsArray()[0];
+    Check("detect: discrete GPU first", dgpu?["name"]?.ToString() == "NVIDIA GeForce RTX 2070" && dgpu?["vendor"]?.ToString() == "nvidia", dgpu?["name"]?.ToString() ?? "");
+    Check("detect: iGPU marked integrated", detection["gpus"]!.AsArray().Any(g => g?["integrated"]?.GetValue<bool>() == true));
+    Check("detect: empty header", detection["controls"]!.AsArray().Any(c => c?["controlId"]?.ToString() == "/lpc/nct6799d/control/4" && c?["connected"]?.GetValue<bool?>() == false));
+    Check("detect: Afterburner conflict", detection["fanSoftwareRunning"]!.AsArray().Any(s => s?["product"]?.ToString() == "MSI Afterburner"));
+
+    var empty = new JsonObject();
+    var state = FanControl.MCP.Wizard.SetupWizard.State(empty, detection);
+    Check("wizard: starts at goal", state["nextStep"]?.ToString() == "goal");
+    var fanRows = state["steps"]!.AsArray().First(s => s?["id"]?.ToString() == "fans")!["questions"]![0]!["rows"]!.AsArray();
+    Check("wizard: fan rows prefilled", fanRows.Any(r => r?["prefill"]?["position"]?.ToString() == "rear" && r?["prefill"]?["direction"]?.ToString() == "exhaust"),
+        string.Join("; ", fanRows.Select(r => $"{r?["name"]}={r?["prefill"]?["position"]}/{r?["prefill"]?["direction"]}")));
+
+    var profile = JsonNode.Parse("""
+        {"goal":{"primary":"quiet_no_perf_loss"},"environment":{"ambientC":22},"cpu":{"cooler":{"type":"air"}},
+         "fans":[
+           {"controlId":"/lpc/nct6799d/control/2","position":"front","direction":"intake","count":1},
+           {"controlId":"/lpc/nct6799d/control/5","position":"top_front","direction":"intake"},
+           {"controlId":"/lpc/nct6799d/control/3","position":"top_rear","direction":"exhaust"},
+           {"controlId":"/lpc/nct6799d/control/0","position":"rear","direction":"exhaust"},
+           {"controlId":"/lpc/nct6799d/control/1","position":"cpu_cooler","direction":"internal"},
+           {"controlId":"NVApiWrapper/0-TU106-A/control/0","position":"gpu","direction":"internal"}]}
+        """)!.AsObject();
+    var plan = FanControl.MCP.Wizard.BaselinePlanner.Plan(profile, detection);
+    var acts = plan["actions"]!.AsArray().OfType<JsonObject>().ToList();
+    string Names(string type) => string.Join(",", acts.Where(a => a["type"]?.ToString() == type).Select(a => a["name"] ?? a["controlName"]));
+    Check("plan: curves CPU/GPU/Case", Names("upsert_curve") == "MCP CPU,MCP GPU,MCP Case", Names("upsert_curve"));
+    Check("plan: 6 assignments, empty header skipped", acts.Count(a => a["type"]?.ToString() == "assign") == 6 && acts.All(a => a["controlId"]?.ToString() != "/lpc/nct6799d/control/4"));
+    Check("plan: exhausts -5 % for positive pressure", acts.Where(a => a["type"]?.ToString() == "assign" && a["controlName"]?.ToString()?.StartsWith("Exhaust") == true).All(a => a["offset"]?.GetValue<int>() == -5));
+    Check("plan: no false short-circuit warning for top-front intake", !plan["warnings"]!.AsArray().Any(w => w!.ToString().Contains("short circuit", StringComparison.OrdinalIgnoreCase)));
+    var gpuPts = acts.First(a => a["name"]?.ToString() == "MCP GPU")["points"]!.AsArray().Select(p => (T: p![0]!.GetValue<double>(), P: p[1]!.GetValue<double>())).ToList();
+    Check("plan: GPU 100 % by 84 °C, floor ≥ 30 %", gpuPts[^1] == (84, 100) && gpuPts.Min(p => p.P) >= 30, string.Join(" ", gpuPts));
+    var cpuPts = acts.First(a => a["name"]?.ToString() == "MCP CPU")["points"]!.AsArray().Select(p => (T: p![0]!.GetValue<double>(), P: p[1]!.GetValue<double>())).ToList();
+    Check("plan: CPU curve monotonic, 100 % by 90 °C", cpuPts.Zip(cpuPts.Skip(1)).All(z => z.First.T < z.Second.T && z.First.P <= z.Second.P) && cpuPts[^1] == (90, 100), string.Join(" ", cpuPts));
+    Check("plan: warns about Afterburner", plan["warnings"]!.AsArray().Any(w => w!.ToString().Contains("Afterburner")));
+
+    // Liquid-cooled variant: pump fixed, radiator on liquid temperature.
+    var aioProfile = profile.DeepClone().AsObject();
+    aioProfile["cpu"] = JsonNode.Parse("""{"cooler":{"type":"aio","model":"Arctic Liquid Freezer III 360","radiatorPosition":"bottom"}}""");
+    aioProfile["fans"] = JsonNode.Parse("""[{"controlId":"/lpc/nct6799d/control/1","position":"pump"},{"controlId":"/lpc/nct6799d/control/2","position":"radiator","direction":"intake"}]""");
+    var liquidTemps = temps.DeepClone().AsArray();
+    liquidTemps.Add(JsonNode.Parse("""{"id":"/aio/liquid","name":"Liquid Temperature","origin":"AIO","value":31}"""));
+    var aioPlan = FanControl.MCP.Wizard.BaselinePlanner.Plan(aioProfile, FanControl.MCP.Wizard.HardwareDetector.Detect(liquidTemps, fans, controls, [], []));
+    var aioActs = aioPlan["actions"]!.AsArray().OfType<JsonObject>().ToList();
+    Check("plan AIO: Arctic pump at 100 %", aioActs.Any(a => a["name"]?.ToString() == "MCP Pump" && a["percent"]?.GetValue<int>() == 100));
+    Check("plan AIO: radiator on liquid sensor", aioActs.Any(a => a["name"]?.ToString() == "MCP Radiator" && a["source"]?.ToString() == "/aio/liquid"));
+    Check("plan AIO: bottom radiator warning", aioPlan["warnings"]!.AsArray().Any(w => w!.ToString().Contains("Bottom-mounted radiator")));
+
+    // Profile merge: fans merged by controlId.
+    var merged = FanControl.MCP.Wizard.SystemProfile.MergePatch(profile, JsonNode.Parse("""{"fans":[{"controlId":"/lpc/nct6799d/control/2","sizeMm":140}],"goal":{"notes":"x"}}"""));
+    var front = merged["fans"]!.AsArray().First(f => f?["controlId"]?.ToString() == "/lpc/nct6799d/control/2");
+    Check("profile merge keeps fields", front?["position"]?.ToString() == "front" && front?["sizeMm"]?.GetValue<int>() == 140 && merged["fans"]!.AsArray().Count == 6 && merged["goal"]?["primary"] is not null);
+}
 
 // Rule checks of the setup analyzer on a synthetic, deliberately bad setup.
 void AnalyzerTests()

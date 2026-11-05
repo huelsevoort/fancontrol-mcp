@@ -21,15 +21,46 @@ internal sealed class EngineBridge
     private readonly IFanControlEngine _engine;
     private readonly IApplicationState? _state;
     private readonly object? _engineLock;
+    private readonly ISensorProvider? _sensorProvider;
 
     public EngineBridge(IFanControlEngine engine)
     {
         _engine = engine;
         _state = GetField<IApplicationState>(engine, "_state");
         _engineLock = GetField<object>(engine, "_lock");
+        // The computer access layer knows every backend sensor, including load, clock and power sensors
+        // that FanControl does not show in its UI.
+        _sensorProvider = GetField<ISensorProvider>(engine, "_computerAccessLayer");
     }
 
     public bool CanManageConfigs => _state is not null;
+
+    public bool HasHardwareSensors => _sensorProvider is not null;
+
+    /// <summary>All backend sensors of the given types (e.g. UsagePercent, Frequency, Power), not only temperatures/fans.</summary>
+    public IReadOnlyList<ISensorSource> HardwareSensors(params BackendSensorType[] types)
+    {
+        if (_sensorProvider is null) return [];
+        return Read(() =>
+        {
+            try
+            {
+                return _sensorProvider.AllSensors.Where(s => types.Length == 0 || types.Contains(s.Type)).ToList();
+            }
+            catch (InvalidOperationException)
+            {
+                return []; // collection changed during a refresh
+            }
+        });
+    }
+
+    public JsonArray HardwareSensorsJson(params BackendSensorType[] types)
+    {
+        var arr = new JsonArray();
+        foreach (var s in HardwareSensors(types))
+            arr.Add(new JsonObject { ["id"] = s.Identifier, ["name"] = s.Name, ["origin"] = s.Origin, ["type"] = s.Type.ToString(), ["value"] = Round(s.Value), ["unit"] = Unit(s.Type) });
+        return arr;
+    }
 
     // ------------------------------------------------------------------ reading
 
@@ -299,6 +330,162 @@ internal sealed class EngineBridge
             throw new ToolException($"'{curveName}' is still used by: {string.Join(", ", users.Concat(mixUsers))}. Assign another curve first.");
         OnFanControlThread(() => { _engine.RemoveFanCurve((IFanCurveId)curve); return true; });
         return new JsonObject { ["deleted"] = curveName };
+    }
+
+    public JsonObject CreateMixSensor(string name, IReadOnlyList<string> sourceRefs, string function)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ToolException("A name is required.");
+        if (sourceRefs.Count < 2) throw new ToolException("A mix sensor needs at least 2 sources.");
+        if (!Enum.TryParse<SensorMixFunction>(function, ignoreCase: true, out var fn))
+            throw new ToolException($"function must be one of: {string.Join(", ", Enum.GetNames<SensorMixFunction>())}.");
+        var ids = sourceRefs.Select(ResolveTemperatureId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (Read(() => _engine.CustomSensors.Cast<object>().Any(s => string.Equals(DisplayName(s), name, StringComparison.OrdinalIgnoreCase))))
+            throw new ToolException($"A custom sensor named '{name}' already exists.");
+
+        var created = OnFanControlThread(() =>
+        {
+            var sensor = _engine.AddCustomSensor(CustomSensorType.Mix, name);
+            if (sensor is not IConfigurable<IMixSensorConfig> mix)
+                throw new ToolException("This FanControl version does not allow configuring the mix sensor; finish it in the UI.");
+            mix.UpdateConfig(new SerializableMixSensor(mix.Config)
+            {
+                SelectedMixFunction = fn,
+                SelectedSensors = ids.Select(i => (ISensorId)new SerializableSensorId { Identifier = i }).ToList(),
+                AllowMissingSensor = false,
+            });
+            return (object)sensor;
+        });
+        return new JsonObject
+        {
+            ["id"] = (created as ISensorId)?.Identifier,
+            ["name"] = DisplayName(created),
+            ["function"] = fn.ToString(),
+            ["sources"] = new JsonArray(ids.Select(i => (JsonNode)i).ToArray()),
+        };
+    }
+
+    /// <summary>Finds a custom sensor that already does what we need (same type, same source, same window) so plans can reuse it.</summary>
+    public string? FindTimeAverageSensor(string sourceId, int seconds)
+        => Read(() => _engine.CustomSensors.Cast<object>()
+            .Where(s => GetProperty(s, "Config") is ITimeAverageSensorConfig c && c.SelectedTime == seconds
+                        && string.Equals(c.SelectedTempSource?.Identifier, sourceId, StringComparison.OrdinalIgnoreCase))
+            .Select(s => (s as ISensorId)?.Identifier).FirstOrDefault());
+
+    public string? FindMixSensor(IReadOnlyCollection<string> sourceIds, string function)
+        => Read(() => _engine.CustomSensors.Cast<object>()
+            .Where(s => GetProperty(s, "Config") is IMixSensorConfig c
+                        && string.Equals(c.SelectedMixFunction.ToString(), function, StringComparison.OrdinalIgnoreCase)
+                        && c.SelectedSensors.Count == sourceIds.Count
+                        && c.SelectedSensors.All(x => sourceIds.Contains(x.Identifier, StringComparer.OrdinalIgnoreCase)))
+            .Select(s => (s as ISensorId)?.Identifier).FirstOrDefault());
+
+    public bool FanCurveExists(string name)
+        => Read(() => _engine.FanCurves.Cast<object>().OfType<IFanCurveId>().Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)));
+
+    public string? FanCurveKind(string name)
+        => Read(() => _engine.FanCurves.Cast<object>().FirstOrDefault(c => string.Equals((c as IFanCurveId)?.Name, name, StringComparison.OrdinalIgnoreCase))?.GetType().Name);
+
+    // ------------------------------------------------------------------ restore points
+
+    private readonly List<RestorePoint> _restorePoints = [];
+
+    /// <summary>
+    /// Snapshot of every control, fan curve and custom sensor configuration (in memory). Restoring brings the
+    /// running state back and deletes curves/sensors created afterwards. The saved config file is not touched.
+    /// </summary>
+    public JsonObject CreateRestorePoint(string label)
+    {
+        var rp = Read(() => new RestorePoint(
+            $"rp{_restorePoints.Count + 1}-{DateTime.Now:HHmmss}",
+            string.IsNullOrWhiteSpace(label) ? "restore point" : label,
+            DateTime.Now,
+            _engine.Controls.Cast<object>().Select(c => (c, Clone(GetProperty(c, "Config")))).Where(x => x.Item2 is not null).Select(x => (x.c, x.Item2!)).ToList(),
+            _engine.FanCurves.Cast<object>().Select(c => (c, Clone(GetProperty(c, "Config")))).Where(x => x.Item2 is not null).Select(x => (x.c, x.Item2!)).ToList(),
+            _engine.CustomSensors.Cast<object>().Select(c => (c, Clone(GetProperty(c, "Config")))).Where(x => x.Item2 is not null).Select(x => (x.c, x.Item2!)).ToList()));
+        lock (_restorePoints)
+        {
+            _restorePoints.Add(rp);
+            if (_restorePoints.Count > 10) _restorePoints.RemoveAt(0);
+        }
+        return rp.ToJson();
+    }
+
+    public JsonArray RestorePoints()
+    {
+        lock (_restorePoints) return new JsonArray(_restorePoints.Select(r => (JsonNode)r.ToJson()).ToArray());
+    }
+
+    public JsonObject Restore(string? id)
+    {
+        RestorePoint rp;
+        lock (_restorePoints)
+        {
+            rp = (id is null ? _restorePoints.LastOrDefault() : _restorePoints.FirstOrDefault(r => r.Id == id))
+                 ?? throw new ToolException(id is null ? "No restore point exists yet." : $"Restore point '{id}' not found.");
+        }
+
+        var removedCurves = new JsonArray();
+        var removedSensors = new JsonArray();
+        OnFanControlThread(() =>
+        {
+            foreach (var (target, config) in rp.Controls) ApplyConfig(target, config);
+            foreach (var (target, config) in rp.Sensors) ApplyConfig(target, config);
+            foreach (var (target, config) in rp.Curves) ApplyConfig(target, config);
+
+            var keepCurves = rp.Curves.Select(c => c.Target).ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var curve in _engine.FanCurves.Cast<object>().Where(c => !keepCurves.Contains(c)).ToList())
+            {
+                _engine.RemoveFanCurve((IFanCurveId)curve);
+                removedCurves.Add(((IFanCurveId)curve).Name);
+            }
+            var keepSensors = rp.Sensors.Select(c => c.Target).ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var sensor in _engine.CustomSensors.Cast<object>().Where(s => !keepSensors.Contains(s)).ToList())
+            {
+                _engine.RemoveCustomSensor((ISensorId)sensor);
+                removedSensors.Add(((ISensorId)sensor).Identifier);
+            }
+            return true;
+        });
+        var result = rp.ToJson();
+        result["restored"] = true;
+        result["removedFanCurves"] = removedCurves;
+        result["removedCustomSensors"] = removedSensors;
+        return result;
+    }
+
+    private sealed record RestorePoint(string Id, string Label, DateTime Created,
+        List<(object Target, object Config)> Controls, List<(object Target, object Config)> Curves, List<(object Target, object Config)> Sensors)
+    {
+        public JsonObject ToJson() => new()
+        {
+            ["id"] = Id, ["label"] = Label, ["created"] = Created.ToString("HH:mm:ss"),
+            ["controls"] = Controls.Count, ["fanCurves"] = Curves.Count, ["customSensors"] = Sensors.Count,
+        };
+    }
+
+    /// <summary>Copies a config object with FanControl's own copy constructors so later edits cannot change the snapshot.</summary>
+    private static object? Clone(object? config) => config switch
+    {
+        null => null,
+        IControlConfig c => new SerializableControlConfig(c),
+        IGraphFanCurveConfig c => new SerializableGraphFanCurve(c),
+        ILinearFanCurveConfig c => new SerializableLinearFanCurve(c),
+        IMixFanCurveConfig c => new SerializableMixFanCurve(c),
+        ITimeAverageSensorConfig c => new SerializableTimeAverageSensor(c),
+        IMixSensorConfig c => new SerializableMixSensor(c),
+        IOffsetSensorConfig c => new SerializableOffsetSensor(c),
+        _ => config, // other types are replaced (not mutated) by FanControl, so the reference is a stable snapshot
+    };
+
+    /// <summary>Calls IConfigurable&lt;T&gt;.UpdateConfig for whichever T the target implements and the config fits.</summary>
+    private static void ApplyConfig(object target, object config)
+    {
+        // Pick the most specific matching interface (e.g. IControlConfig over ISensorConfig).
+        var candidates = target.GetType().GetInterfaces()
+            .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IConfigurable<>) && i.GetGenericArguments()[0].IsInstanceOfType(config))
+            .ToList();
+        var best = candidates.FirstOrDefault(c => candidates.All(o => o == c || !c.GetGenericArguments()[0].IsAssignableFrom(o.GetGenericArguments()[0])));
+        best?.GetMethod("UpdateConfig")!.Invoke(target, [config]);
     }
 
     public JsonObject DeleteCustomSensor(string reference)

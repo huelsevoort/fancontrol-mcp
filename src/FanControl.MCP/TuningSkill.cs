@@ -25,6 +25,28 @@ internal static class TuningSkill
 
     public static IReadOnlyList<McpPrompt> Prompts { get; } =
     [
+        new McpPrompt("setup_fan_control", "Set up FanControl (guided)",
+            "Guided setup: the assistant interviews you about goal, room, case, fan layout, coolers and GPU, proposes a baseline configuration and validates it under load.",
+            [
+                new McpPromptArgument("goal", "Optional: quiet_no_perf_loss, balanced, max_performance, silent or constant"),
+            ],
+            args =>
+            {
+                var goal = args.TryGetValue("goal", out var g) ? $" My goal: {g}." : "";
+                return $"""
+                    Please set up FanControl with me from scratch using the guided setup wizard.{goal}
+                    1. Call setup_wizard (if your client shows forms, prefer setup_wizard_form) and walk me through the open steps one at a time.
+                       Confirm detected hardware instead of asking for it, explain briefly why a question matters, accept "don't know".
+                    2. Save my answers with save_system_profile after each step.
+                    3. When complete, call propose_baseline_config, explain the plan and its warnings in plain words, and wait for my OK.
+                    4. Apply it with apply_baseline_config, then help me validate it under my real workload with start_measurement / mark_phase /
+                       get_measurement_summary (guard on). Compare clocks and temperatures; tune if needed.
+                    5. Only call save_config when I explicitly agree.
+                    Follow the attached best-practice guide. Answer in the language I use.
+                    """;
+            },
+            [GuideUri]),
+
         new McpPrompt("tune_fan_curves", "Tune fan curves",
             "Review the current FanControl setup and tune fan curves following the built-in best practices.",
             [
