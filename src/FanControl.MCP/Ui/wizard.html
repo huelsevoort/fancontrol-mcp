@@ -94,15 +94,16 @@
           fans: "Fan output", position: "Position", direction: "Direction", size: "Size mm", count: "Count", model: "Model",
           noTools: "This host cannot call tools from the view: answer in the chat instead.", summary: "What the plan does", warnings: "Check these",
           assignments: "Assignments", curve: "Curve", minimum: "Min", offset: "Offset", planned: "Plan ready — nothing has been changed yet.",
-          sent: "Sent to the assistant.", error: "Error", prefilled: "suggested", step: "Step" },
+          sent: "Sent to the assistant.", error: "Error", prefilled: "suggested", step: "Step", constant: "constant" },
     de: { title: "FanControl-Einrichtung", save: "Speichern & weiter", skip: "Überspringen", back: "Zurück", plan: "Plan erstellen", apply: "Mit Assistent anwenden",
           replan: "Neu berechnen", saving: "Speichere…", ready: "Bereit", complete: "Alles beisammen – jetzt den Basis-Plan erstellen.", detected: "Erkannt",
           fans: "Lüfterausgang", position: "Position", direction: "Richtung", size: "Größe mm", count: "Anzahl", model: "Modell",
           noTools: "Dieser Host kann aus der Ansicht keine Tools aufrufen: bitte im Chat antworten.", summary: "Was der Plan macht", warnings: "Bitte prüfen",
           assignments: "Zuordnungen", curve: "Kurve", minimum: "Min", offset: "Offset", planned: "Plan fertig – noch wurde nichts verändert.",
-          sent: "An den Assistenten geschickt.", error: "Fehler", prefilled: "Vorschlag", step: "Schritt" },
+          sent: "An den Assistenten geschickt.", error: "Fehler", prefilled: "Vorschlag", step: "Schritt", constant: "konstant" },
   };
   let t = T.en;
+  let lang = "en";   // language requested from the server for questions, options and plan texts
 
   // ---------------------------------------------------------------- JSON-RPC over postMessage (MCP Apps 2026-01-26)
   const $ = (id) => document.getElementById(id);
@@ -252,7 +253,7 @@
 
   function curveCard(c) {
     const W = 220, H = 110, P = 18;
-    if (c.curveType === "flat") return el("div", { class: "curve" }, el("b", {}, c.name), el("div", { class: "muted small" }, `${c.percent} % constant`));
+    if (c.curveType === "flat") return el("div", { class: "curve" }, el("b", {}, c.name), el("div", { class: "muted small" }, `${c.percent} % ${t.constant}`));
     const pts = c.points || [];
     const x = (v) => P + (v - 20) / 80 * (W - P - 6), y = (v) => H - P - v / 100 * (H - P - 6);
     const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
@@ -281,7 +282,7 @@
     try {
       status(t.saving);
       await callTool("save_system_profile", { patch });
-      state = await callTool("setup_wizard", {});
+      state = await callTool("setup_wizard", { language: lang });
       const steps = state.steps; const idx = steps.findIndex(s => s.id === stepId);
       openStep(state.complete ? stepId : (steps.slice(idx + 1).find(s => !s.complete) || steps.find(s => !s.complete) || steps[idx]).id);
       status(t.ready);
@@ -290,7 +291,7 @@
   }
 
   async function makePlan() {
-    try { status(t.saving); plan = await callTool("propose_baseline_config", {}); status(t.ready); render(); }
+    try { status(t.saving); plan = await callTool("propose_baseline_config", { language: lang }); status(t.ready); render(); }
     catch (e) { status(`${t.error}: ${e.message}`); }
   }
 
@@ -310,13 +311,19 @@
     if (ctx.theme) root.style.colorScheme = ctx.theme;
     const vars = ctx.styles && ctx.styles.variables;
     if (vars) for (const [k, v] of Object.entries(vars)) if (v) root.style.setProperty(k, v);
-    if (ctx.locale) { t = String(ctx.locale).toLowerCase().startsWith("de") ? T.de : T.en; document.documentElement.lang = t === T.de ? "de" : "en"; $("title").textContent = t.title; }
+    if (ctx.locale) { lang = String(ctx.locale).toLowerCase().startsWith("de") ? "de" : "en"; t = T[lang]; document.documentElement.lang = lang; $("title").textContent = t.title; }
   }
 
   function onToolResult(result) {
     if (!result || result.isError) { status(`${t.error}: ${((result?.content || [])[0] || {}).text || ""}`); return; }
     const sc = result.structuredContent;
-    if (sc && sc.steps) { state = sc; openStep(sc.nextStep || sc.steps[0].id); status(t.ready); }
+    if (sc && sc.steps) {
+      state = sc; openStep(sc.nextStep || sc.steps[0].id); status(t.ready);
+      // The assistant may have called the tool without (or with another) language: reload in the host's language.
+      if (sc.language && sc.language !== lang && hostCaps.serverTools) {
+        callTool("setup_wizard", { language: lang }).then(s => { state = s; openStep(stepId); }).catch(() => {});
+      }
+    }
   }
 
   window.addEventListener("message", (event) => {
@@ -357,7 +364,7 @@
       new ResizeObserver(reportSize).observe(document.body);
       reportSize();
       // Hosts push the tool result after 'initialized'; if none arrives, load the state ourselves.
-      setTimeout(async () => { if (!state && hostCaps.serverTools) { try { onToolResult({ structuredContent: await callTool("setup_wizard", {}) }); } catch (e) { status(`${t.error}: ${e.message}`); } } }, 1500);
+      setTimeout(async () => { if (!state && hostCaps.serverTools) { try { onToolResult({ structuredContent: await callTool("setup_wizard", { language: lang }) }); } catch (e) { status(`${t.error}: ${e.message}`); } } }, 1500);
     } catch (e) { status("Handshake failed: " + e.message); }
   })();
 })();

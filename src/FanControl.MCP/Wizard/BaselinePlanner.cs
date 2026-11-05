@@ -27,8 +27,10 @@ internal static class BaselinePlanner
         _ => new(8, 4, 2, 3, 3, 8, 7, 5, 20, 28), // quiet_no_perf_loss
     };
 
-    public static JsonObject Plan(JsonObject profile, JsonObject detection, string? goalOverride = null)
+    public static JsonObject Plan(JsonObject profile, JsonObject detection, string? goalOverride = null, string language = "en")
     {
+        var lang = Loc.Normalize(language);
+        string S(string en, string de) => Loc.Say(lang, en, de);
         var goal = goalOverride ?? SetupWizard.Get(profile, "goal.primary")?.ToString() ?? "quiet_no_perf_loss";
         if (!SetupWizard.Goals.Any(g => g.Id == goal)) goal = "quiet_no_perf_loss";
         var t = Tuning(goal);
@@ -50,9 +52,9 @@ internal static class BaselinePlanner
         var coolerType = SetupWizard.Get(profile, "cpu.cooler.type")?.ToString() ?? "air";
         var liquidCooled = coolerType is "aio" or "custom_loop";
 
-        if (cpuTempId is null) warnings.Add("No CPU temperature sensor found; CPU-related curves were skipped.");
+        if (cpuTempId is null) warnings.Add(S("No CPU temperature sensor found; CPU-related curves were skipped.", "Kein CPU-Temperatursensor gefunden; CPU-Kurven wurden übersprungen."));
         if (summerAmbient is { } s && s - ambient >= 6)
-            warnings.Add($"Summer room temperature ({s:0} °C) is {s - ambient:0} °C above normal: expect component temperatures to rise by about the same; curves already end at 100 % before the limits.");
+            warnings.Add(S($"Summer room temperature ({s:0} °C) is {s - ambient:0} °C above normal: expect component temperatures to rise by about the same; curves already end at 100 % before the limits.", $"Die Sommer-Raumtemperatur ({s:0} °C) liegt {s - ambient:0} °C über normal: Bauteile werden etwa genauso viel wärmer; die Kurven erreichen 100 % ohnehin vor den Grenzen."));
 
         if (cpuTempId is not null)
             actions.Add(new JsonObject { ["type"] = "ensure_time_average", ["key"] = "cpuAvg", ["name"] = $"MCP CPU avg {t.CpuAvgSeconds}s", ["source"] = cpuTempId, ["seconds"] = t.CpuAvgSeconds });
@@ -61,7 +63,7 @@ internal static class BaselinePlanner
         if (cpuTempId is not null && gpuTempId is not null)
         {
             actions.Add(new JsonObject { ["type"] = "ensure_mix", ["key"] = "caseMix", ["name"] = "MCP CPU/GPU max", ["sources"] = new JsonArray("$cpuAvg", "$gpuAvg"), ["function"] = "Max" });
-            summary.Add("Case fans follow the hotter of CPU and GPU (both smoothed), so they react to gaming GPU heat as well as CPU load.");
+            summary.Add(S("Case fans follow the hotter of CPU and GPU (both smoothed), so they react to gaming GPU heat as well as CPU load.", "Die Gehäuselüfter folgen der wärmeren von CPU und GPU (beide geglättet) und reagieren so auf GPU-Wärme beim Spielen wie auf CPU-Last."));
         }
         var caseSource = cpuTempId is not null && gpuTempId is not null ? "$caseMix" : cpuTempId is not null ? "$cpuAvg" : gpuTempId is not null ? "$gpuAvg" : null;
         var caseN = Math.Min(cpuLim.N, gpu is null ? cpuLim.N : gpuLim.N);
@@ -80,7 +82,7 @@ internal static class BaselinePlanner
         caseFans.RemoveAll(f => !f.Connected);
         cpuFans.RemoveAll(f => !f.Connected);
         radiatorFans.RemoveAll(f => !f.Connected);
-        if (skipped.Count > 0) summary.Add($"Left untouched (0 RPM, probably empty): {string.Join(", ", skipped.Select(f => f.Name))}.");
+        if (skipped.Count > 0) summary.Add(S($"Left untouched (0 RPM, probably empty): {string.Join(", ", skipped.Select(f => f.Name))}.", $"Unverändert gelassen (0 RPM, vermutlich leer): {string.Join(", ", skipped.Select(f => f.Name))}."));
 
         // ---------------------------------------------------------------- CPU cooler fans
         if (cpuTempId is not null && cpuFans.Count > 0)
@@ -88,7 +90,7 @@ internal static class BaselinePlanner
             var floor = Floor(cpuFans, t.CpuFloor);
             AddCurve(actions, "MCP CPU", "$cpuAvg", ComponentShape(goal, cpuLim, floor), t.HystUp, t.HystDown, t.RtUp, t.RtDown);
             foreach (var f in cpuFans) Assign(actions, f, "MCP CPU", t, Math.Max(floor - 5, 0), 0);
-            summary.Add($"CPU cooler: {floor} % floor, 100 % by {cpuLim.F:0} °C ({cpuLim.Family}: no clock loss below ~{cpuLim.N:0} °C).");
+            summary.Add(S($"CPU cooler: {floor} % floor, 100 % by {cpuLim.F:0} °C ({cpuLim.Family}: no clock loss below ~{cpuLim.N:0} °C).", $"CPU-Kühler: Untergrenze {floor} %, 100 % bei {cpuLim.F:0} °C ({cpuLim.Family}: kein Taktverlust unter ~{cpuLim.N:0} °C)."));
         }
 
         // ---------------------------------------------------------------- liquid cooling
@@ -103,8 +105,8 @@ internal static class BaselinePlanner
                 var pumpPct = fullOnly || goal is "max_performance" or "balanced" ? 100 : 80;
                 actions.Add(new JsonObject { ["type"] = "upsert_curve", ["name"] = "MCP Pump", ["curveType"] = "flat", ["percent"] = pumpPct });
                 foreach (var p in pumps) Assign(actions, p, "MCP Pump", t with { StepDown = 10 }, 60, 0);
-                summary.Add($"Pump: constant {pumpPct} % (pumps belong at a fixed high speed, never on a temperature curve below 60 %).");
-                if (pumpPct < 100) warnings.Add("Pump at 80 % for less noise (allowed by e.g. Corsair, costs ~1-2 °C). If your AIO's manual asks for 100 %, use 100 %.");
+                summary.Add(S($"Pump: constant {pumpPct} % (pumps belong at a fixed high speed, never on a temperature curve below 60 %).", $"Pumpe: konstant {pumpPct} % (Pumpen gehören auf eine feste, hohe Drehzahl, nie auf eine Temperaturkurve unter 60 %)."));
+                if (pumpPct < 100) warnings.Add(S("Pump at 80 % for less noise (allowed by e.g. Corsair, costs ~1-2 °C). If your AIO's manual asks for 100 %, use 100 %.", "Pumpe auf 80 % für weniger Geräusch (z. B. von Corsair erlaubt, kostet ~1–2 °C). Verlangt das Handbuch deiner AIO 100 %, nimm 100 %."));
             }
             if (radiatorFans.Count > 0)
             {
@@ -112,24 +114,24 @@ internal static class BaselinePlanner
                 if (liquidId is not null)
                 {
                     AddCurve(actions, "MCP Radiator", liquidId, LiquidShape(goal, ambient, floor), 1, 1, 2, 3);
-                    summary.Add($"Radiator fans follow the liquid temperature ({ambient + 4:0} -> {LiquidFull(goal, ambient):0} °C), not the spiky CPU temperature.");
+                    summary.Add(S($"Radiator fans follow the liquid temperature ({ambient + 4:0} -> {LiquidFull(goal, ambient):0} °C), not the spiky CPU temperature.", $"Die Radiatorlüfter folgen der Wassertemperatur ({ambient + 4:0} -> {LiquidFull(goal, ambient):0} °C), nicht der sprunghaften CPU-Temperatur."));
                 }
                 else if (cpuTempId is not null)
                 {
                     actions.Add(new JsonObject { ["type"] = "ensure_time_average", ["key"] = "cpuSlow", ["name"] = "MCP CPU avg 45s", ["source"] = cpuTempId, ["seconds"] = 45 });
                     AddCurve(actions, "MCP Radiator", "$cpuSlow", ComponentShape(goal, cpuLim, floor), 4, 4, 5, 10);
-                    warnings.Add("No liquid temperature is visible to FanControl. Radiator fans fall back to a 45 s CPU average with 4 °C hysteresis. Better: a plugin that exposes the coolant sensor (FanControl.CorsairLink, FanControl.NzxtKraken, AquacomputerDevices, Liquidctl, HWInfo) or a 10K thermistor on a T_SENSOR header.");
+                    warnings.Add(S("No liquid temperature is visible to FanControl. Radiator fans fall back to a 45 s CPU average with 4 °C hysteresis. Better: a plugin that exposes the coolant sensor (FanControl.CorsairLink, FanControl.NzxtKraken, AquacomputerDevices, Liquidctl, HWInfo) or a 10K thermistor on a T_SENSOR header.", "FanControl sieht keine Wassertemperatur. Die Radiatorlüfter nutzen ersatzweise einen 45-s-Mittelwert der CPU mit 4 °C Hysterese. Besser: ein Plugin, das den Wassersensor liefert (FanControl.CorsairLink, FanControl.NzxtKraken, AquacomputerDevices, Liquidctl, HWInfo), oder ein 10K-Thermistor am T_SENSOR-Anschluss."));
                 }
                 foreach (var f in radiatorFans) Assign(actions, f, "MCP Radiator", t, Math.Max(floor - 5, 0), 0);
             }
             var radPos = SetupWizard.Get(profile, "cpu.cooler.radiatorPosition")?.ToString();
             var radDir = SetupWizard.Get(profile, "cpu.cooler.radiatorDirection")?.ToString();
             if (liquidCooled && radPos == "top" && radDir == "intake")
-                warnings.Add("Top-mounted radiator as intake works against rising heat; top exhaust is the usual default.");
+                warnings.Add(S("Top-mounted radiator as intake works against rising heat; top exhaust is the usual default.", "Ein oben montierter Radiator als Einlass arbeitet gegen die aufsteigende Wärme; oben ist Auslass der übliche Standard."));
             if (liquidCooled && radPos == "bottom")
-                warnings.Add("Bottom-mounted radiator: the pump is then the highest point of the loop and collects air (noise, wear). Move the radiator to the top or front.");
+                warnings.Add(S("Bottom-mounted radiator: the pump is then the highest point of the loop and collects air (noise, wear). Move the radiator to the top or front.", "Radiator am Boden: Dann ist die Pumpe der höchste Punkt des Kreislaufs und sammelt Luft (Geräusch, Verschleiß). Radiator besser oben oder vorne montieren."));
             if (liquidCooled && radPos == "front" && radDir == "intake")
-                summary.Add("Front intake radiator: best for the CPU, but warms the case air (GPU typically +6-7 °C).");
+                summary.Add(S("Front intake radiator: best for the CPU, but warms the case air (GPU typically +6-7 °C).", "Radiator vorne als Einlass: am besten für die CPU, erwärmt aber die Gehäuseluft (GPU typisch +6–7 °C)."));
         }
 
         // ---------------------------------------------------------------- GPU
@@ -145,17 +147,17 @@ internal static class BaselinePlanner
                 // NVIDIA: 0 % hands control back to the card's own fan-stop; then jump straight to >= 30 % (1-29 % is invalid).
                 var stopAt = Math.Min(shape[0].T, 50);
                 shape = [(stopAt - 1, 0), (stopAt, floor), .. shape.Where(p => p.T > stopAt)];
-                summary.Add($"GPU fan-stop below {stopAt - 1:0} °C via NVIDIA's 0 % override, then {floor} % and up.");
+                summary.Add(S($"GPU fan-stop below {stopAt - 1:0} °C via NVIDIA's 0 % override, then {floor} % and up.", $"GPU-Lüfterstopp unter {stopAt - 1:0} °C über NVIDIAs 0-%-Override, danach ab {floor} %."));
             }
             if (gpu?["vendor"]?.ToString() == "amd")
             {
-                warnings.Add("AMD GPU: applying any FanControl fan setting resets Adrenalin overclock/undervolt settings, and ADLX control is unreliable in service mode and around sleep. GPU fan control was left out; the plan only reads its temperature. Enable it manually if you accept that.");
+                warnings.Add(S("AMD GPU: applying any FanControl fan setting resets Adrenalin overclock/undervolt settings, and ADLX control is unreliable in service mode and around sleep. GPU fan control was left out; the plan only reads its temperature. Enable it manually if you accept that.", "AMD-GPU: Jede Lüftereinstellung aus FanControl setzt Adrenalin-Übertaktung/Undervolting zurück, und die ADLX-Steuerung ist im Dienstmodus und rund um den Standby unzuverlässig. Die GPU-Lüftersteuerung bleibt deshalb außen vor, der Plan liest nur die Temperatur. Bei Bedarf manuell aktivieren."));
             }
             else
             {
                 AddCurve(actions, "MCP GPU", "$gpuAvg", shape, hystUp, Math.Min(t.HystDown, 2), t.RtUp, Math.Min(t.RtDown, 6));
                 foreach (var f in gpuFans) Assign(actions, f, "MCP GPU", t, zeroRpm ? 0 : floor, 0, zeroRpm ? floor : null);
-                summary.Add($"GPU: {floor} % floor (card minimum), 100 % by {gpuLim.F:0} °C ({gpuLim.Family}: no clock loss below ~{gpuLim.N:0} °C).");
+                summary.Add(S($"GPU: {floor} % floor (card minimum), 100 % by {gpuLim.F:0} °C ({gpuLim.Family}: no clock loss below ~{gpuLim.N:0} °C).", $"GPU: Untergrenze {floor} % (Minimum der Karte), 100 % bei {gpuLim.F:0} °C ({gpuLim.Family}: kein Taktverlust unter ~{gpuLim.N:0} °C)."));
             }
         }
 
@@ -173,38 +175,39 @@ internal static class BaselinePlanner
             if (intakes > 0 && exhausts > 0)
             {
                 if (intakes >= exhausts) exhaustOffset = -5;
-                else { intakeOffset = 5; warnings.Add($"More exhaust ({exhausts}) than intake ({intakes}) fans: negative pressure pulls dust through unfiltered gaps. Intakes run 5 % faster to compensate; consider flipping a fan to intake."); }
-                summary.Add($"Slight positive pressure: {intakes} intake vs {exhausts} exhaust fan(s), {(exhaustOffset != 0 ? "exhausts -5 %" : "intakes +5 %")}.");
+                else { intakeOffset = 5; warnings.Add(S($"More exhaust ({exhausts}) than intake ({intakes}) fans: negative pressure pulls dust through unfiltered gaps. Intakes run 5 % faster to compensate; consider flipping a fan to intake.", $"Mehr Auslass- ({exhausts}) als Einlasslüfter ({intakes}): Unterdruck zieht Staub durch ungefilterte Spalten. Die Einlässe laufen zum Ausgleich 5 % schneller; erwäge, einen Lüfter auf Einlass zu drehen.")); }
+                summary.Add(S($"Slight positive pressure: {intakes} intake vs {exhausts} exhaust fan(s), {(exhaustOffset != 0 ? "exhausts -5 %" : "intakes +5 %")}.", $"Leichter Überdruck: {intakes} Einlass- gegen {exhausts} Auslasslüfter, {(exhaustOffset != 0 ? "Auslässe -5 %" : "Einlässe +5 %")}."));
             }
-            else if (exhausts == 0 && intakes > 0) warnings.Add("No exhaust fan: hot air can only leave passively. One rear exhaust usually helps a lot.");
-            else if (intakes == 0 && exhausts > 0) warnings.Add("No intake fan: the case runs at negative pressure and collects dust.");
+            else if (exhausts == 0 && intakes > 0) warnings.Add(S("No exhaust fan: hot air can only leave passively. One rear exhaust usually helps a lot.", "Kein Auslasslüfter: Warme Luft kann nur passiv entweichen. Ein Auslass hinten hilft meist deutlich."));
+            else if (intakes == 0 && exhausts > 0) warnings.Add(S("No intake fan: the case runs at negative pressure and collects dust.", "Kein Einlasslüfter: Im Gehäuse herrscht Unterdruck, es sammelt sich Staub."));
 
             if (coolerType is "air" or "stock" && caseFans.Any(f => f.Position == "top_front" && f.Direction == "exhaust") && caseFans.Any(f => f.Position == "front" && f.Direction == "intake"))
-                warnings.Add("With an air cooler, a top-front exhaust pulls the fresh front air straight out before it reaches the cooler (short circuit). Make it an intake or switch it off, as long as a rear/top-rear exhaust remains.");
+                warnings.Add(S("With an air cooler, a top-front exhaust pulls the fresh front air straight out before it reaches the cooler (short circuit). Make it an intake or switch it off, as long as a rear/top-rear exhaust remains.", "Mit Luftkühler zieht ein Auslass oben vorne die frische Frontluft direkt wieder hinaus, bevor sie den Kühler erreicht (Kurzschluss). Mach ihn zum Einlass oder schalte ihn ab, solange ein Auslass hinten bzw. oben hinten bleibt."));
             if (caseFans.Any(f => f.Position == "bottom" && f.Direction == "exhaust"))
-                warnings.Add("Bottom fan as exhaust works against rising heat and feeds the GPU less; bottom fans should be intakes (they help GPU temperatures a lot).");
+                warnings.Add(S("Bottom fan as exhaust works against rising heat and feeds the GPU less; bottom fans should be intakes (they help GPU temperatures a lot).", "Bodenlüfter als Auslass arbeitet gegen die aufsteigende Wärme und versorgt die GPU schlechter; Bodenlüfter sollten Einlässe sein (sie helfen der GPU deutlich)."));
             var similar = caseFans.GroupBy(f => f.Direction).Where(g => g.Count() >= 2).ToList();
             if (similar.Count > 0 && goal is "quiet_no_perf_loss" or "silent")
-                summary.Add("If identical fans hum or beat together, offset one of them by ~50 RPM (offset 2-3 %).");
+                summary.Add(S("If identical fans hum or beat together, offset one of them by ~50 RPM (offset 2-3 %).", "Wenn gleiche Lüfter zusammen brummen oder schweben, versetze einen davon um ~50 RPM (Offset 2–3 %)."));
 
             foreach (var f in caseFans)
             {
                 var offset = f.Direction == "intake" ? intakeOffset : f.Direction == "exhaust" ? exhaustOffset : 0;
                 Assign(actions, f, "MCP Case", t, allowZero ? 0 : Math.Max(floor - 5, 0), offset);
             }
-            summary.Add($"Case fans: {(allowZero ? "may stop at idle" : $"{floor} % floor")}, reach 100 % around {caseN + 10:0} °C of the hotter component.");
+            summary.Add(S($"Case fans: {(allowZero ? "may stop at idle" : $"{floor} % floor")}, reach 100 % around {caseN + 10:0} °C of the hotter component.", $"Gehäuselüfter: {(allowZero ? "dürfen im Leerlauf stehen" : $"Untergrenze {floor} %")}, 100 % bei etwa {caseN + 10:0} °C des wärmeren Bauteils."));
         }
 
-        if (gpu is null) warnings.Add("No dedicated GPU detected; GPU curves skipped.");
+        if (gpu is null) warnings.Add(S("No dedicated GPU detected; GPU curves skipped.", "Keine dedizierte GPU erkannt; GPU-Kurven übersprungen."));
         if (detection["fanSoftwareRunning"] is JsonArray sw && sw.Count > 0)
-            warnings.Add($"Other fan software is running ({string.Join(", ", sw.Select(x => x?["product"]))}). Make sure only FanControl controls these fans.");
+            warnings.Add(S($"Other fan software is running ({string.Join(", ", sw.Select(x => x?["product"]))}). Make sure only FanControl controls these fans.", $"Andere Lüfter-Software läuft ({string.Join(", ", sw.Select(x => x?["product"]))}). Stelle sicher, dass nur FanControl diese Lüfter steuert."));
         if (SetupWizard.Get(profile, "software.biosFallback")?.ToString() == "silent_bios")
-            warnings.Add("The BIOS fallback curve is very quiet: if FanControl ever stops, components can run hot. A moderate BIOS curve is a safer fallback.");
+            warnings.Add(S("The BIOS fallback curve is very quiet: if FanControl ever stops, components can run hot. A moderate BIOS curve is a safer fallback.", "Die BIOS-Rückfallkurve ist sehr leise: Falls FanControl einmal nicht läuft, können Bauteile heiß werden. Eine moderate BIOS-Kurve ist sicherer."));
 
         return new JsonObject
         {
             ["goal"] = goal,
-            ["goalLabel"] = SetupWizard.Goals.First(g => g.Id == goal).Label,
+            ["goalLabel"] = Loc.T(lang, SetupWizard.Goals.First(g => g.Id == goal).Label),
+            ["language"] = lang,
             ["summary"] = new JsonArray(summary.Select(x => (JsonNode)x).ToArray()),
             ["warnings"] = new JsonArray(warnings.Select(x => (JsonNode)x).ToArray()),
             ["actions"] = actions,

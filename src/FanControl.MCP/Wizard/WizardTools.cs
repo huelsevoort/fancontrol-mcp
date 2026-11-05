@@ -49,6 +49,19 @@ internal static class WizardTools
             if (!settings.AllowWrite) throw new ToolException($"Write access is disabled (allowWrite=false in {settings.LoadedFrom}).");
         }
 
+        // Language of user-facing texts: explicit argument, else the one remembered in the profile.
+        string Lang(JsonObject a)
+        {
+            if (Arg.OptString(a, "language") is { } l)
+            {
+                var norm = Loc.Normalize(l);
+                if (ctx.Profile.Snapshot()["language"]?.ToString() != norm) ctx.Profile.Merge(new JsonObject { ["language"] = norm });
+                return norm;
+            }
+            return Loc.Normalize(ctx.Profile.Snapshot()["language"]?.ToString());
+        }
+        (string, JsonObject, bool) LanguageArg() => ("language", new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("en", "de"), ["description"] = "Language of the user-facing texts (questions, options, plan). Pass the user's language; it is remembered." }, false);
+
         JsonObject Detect(EngineBridge e) => HardwareDetector.Detect(e.Temperatures(false), e.Fans(true), e.Controls(false),
             e.HardwareSensorsJson(BackendSensorType.UsagePercent, BackendSensorType.Frequency, BackendSensorType.Power), ProcessNames());
 
@@ -56,20 +69,20 @@ internal static class WizardTools
             "Start or continue the guided FanControl setup. Returns all wizard steps (goal, usage & room, case, fans & airflow, CPU cooling, GPU, BIOS & software) " +
             "with questions, options, prefilled values from hardware detection, what is already answered, and the next step. Use it to interview the user step by step, " +
             "saving answers with save_system_profile, then propose_baseline_config. Call it again any time to see progress.",
-            Schema.Object(), ReadOnly: true,
-            _ => SetupWizard.State(ctx.Profile.Snapshot(), Detect(Engine())), Meta: UiMeta());
+            Schema.Object(LanguageArg()), ReadOnly: true,
+            a => SetupWizard.State(ctx.Profile.Snapshot(), Detect(Engine()), Lang(a)), Meta: UiMeta());
 
         yield return new McpTool("setup_wizard_form", "Setup wizard as forms",
             "Runs the open setup wizard steps as native forms in clients that support MCP elicitation (e.g. Claude Code, VS Code, Cursor): " +
             "one form per step and one per fan output, answers are saved to the profile right away. Prefer this over asking in chat when available. " +
             "Fails with a clear message if the client cannot show forms.",
-            Schema.Object(("step", new JsonObject
+            Schema.Object(LanguageArg(), ("step", new JsonObject
             {
                 ["type"] = "string", ["enum"] = new JsonArray("goal", "usage", "case", "fans", "cpu_cooling", "gpu", "software"),
                 ["description"] = "Only this step (also if already answered). Default: all open steps in order.",
             }, false)),
             ReadOnly: false,
-            a => WizardForms.Run(ctx, () => Detect(Engine()), Arg.OptString(a, "step")), Idempotent: false);
+            a => WizardForms.Run(ctx, () => Detect(Engine()), Arg.OptString(a, "step"), Lang(a)), Idempotent: false);
 
         yield return new McpTool("detect_hardware", "Detect hardware",
             "What FanControl can detect automatically: CPU and GPU models with their thermal limits, primary temperature sensors, liquid sensors, every fan output with paired RPM sensor and whether a fan is connected, spinning fans without control, and other running fan/RGB software that may conflict.",
@@ -102,7 +115,7 @@ internal static class WizardTools
             "Computes a baseline FanControl configuration from the system profile, detected hardware and the goal (quiet_no_perf_loss, balanced, max_performance, silent, constant): " +
             "smoothed sensors, curves per fan group (CPU cooler, GPU, case, radiator, pump), assignments, tuning and pressure offsets, plus warnings about layout and software. " +
             "Nothing is changed. Present it to the user and apply with apply_baseline_config(plan_id) only after they agree.",
-            Schema.Object(("goal", new JsonObject
+            Schema.Object(LanguageArg(), ("goal", new JsonObject
             {
                 ["type"] = "string",
                 ["enum"] = new JsonArray(SetupWizard.Goals.Select(g => (JsonNode)g.Id).ToArray()),
@@ -111,7 +124,7 @@ internal static class WizardTools
             ReadOnly: true,
             a =>
             {
-                var plan = BaselinePlanner.Plan(ctx.Profile.Snapshot(), Detect(Engine()), Arg.OptString(a, "goal"));
+                var plan = BaselinePlanner.Plan(ctx.Profile.Snapshot(), Detect(Engine()), Arg.OptString(a, "goal"), Lang(a));
                 var id = $"plan-{DateTime.Now:HHmmss}";
                 plan["planId"] = id;
                 lock (ctx.Plans) ctx.Plans[id] = plan;

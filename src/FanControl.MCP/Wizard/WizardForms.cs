@@ -11,7 +11,7 @@ internal static class WizardForms
 {
     private static readonly TimeSpan FormTimeout = TimeSpan.FromMinutes(15);
 
-    public static JsonObject Run(WizardContext ctx, Func<JsonObject> detect, string? onlyStep)
+    public static JsonObject Run(WizardContext ctx, Func<JsonObject> detect, string? onlyStep, string lang = "en")
     {
         var call = McpCallContext.Current;
         if (call?.Session?.SupportsForms != true)
@@ -25,7 +25,7 @@ internal static class WizardForms
 
         while (true)
         {
-            var state = SetupWizard.State(ctx.Profile.Snapshot(), detection);
+            var state = SetupWizard.State(ctx.Profile.Snapshot(), detection, lang);
             var steps = state["steps"]!.AsArray().OfType<JsonObject>().ToList();
             var step = onlyStep is not null
                 ? steps.FirstOrDefault(s => s["id"]?.ToString() == onlyStep && !asked.Contains(onlyStep))
@@ -34,12 +34,12 @@ internal static class WizardForms
             var id = step["id"]!.ToString();
             asked.Add(id);
 
-            var outcome = id == "fans" ? AskFans(call, ctx, step) : AskStep(call, ctx, step, steps.IndexOf(step) + 1, steps.Count);
+            var outcome = id == "fans" ? AskFans(call, ctx, step, lang) : AskStep(call, ctx, step, steps.IndexOf(step) + 1, steps.Count, lang);
             if (outcome == "cancel") { cancelled = true; break; }
             (outcome == "accept" ? done : skipped).Add(id);
         }
 
-        var final = SetupWizard.State(ctx.Profile.Snapshot(), detection);
+        var final = SetupWizard.State(ctx.Profile.Snapshot(), detection, lang);
         return new JsonObject
         {
             ["completedSteps"] = done,
@@ -54,7 +54,7 @@ internal static class WizardForms
         };
     }
 
-    private static string AskStep(McpCallContext call, WizardContext ctx, JsonObject step, int index, int total)
+    private static string AskStep(McpCallContext call, WizardContext ctx, JsonObject step, int index, int total, string lang)
     {
         var properties = new JsonObject();
         var required = new JsonArray();
@@ -73,7 +73,7 @@ internal static class WizardForms
 
         var requested = new JsonObject { ["type"] = "object", ["properties"] = properties };
         if (required.Count > 0) requested["required"] = required;
-        var result = call.Elicit($"FanControl setup {index}/{total}: {step["title"]}. {step["why"]}", requested, FormTimeout)
+        var result = call.Elicit(Loc.Say(lang, $"FanControl setup {index}/{total}: {step["title"]}. {step["why"]}", $"FanControl-Einrichtung {index}/{total}: {step["title"]}. {step["why"]}"), requested, FormTimeout)
                      ?? throw new ToolException("The client does not support forms.");
         var action = result["action"]?.ToString() ?? "cancel";
         if (action != "accept" || result["content"] is not JsonObject content) return action;
@@ -89,7 +89,7 @@ internal static class WizardForms
         return "accept";
     }
 
-    private static string AskFans(McpCallContext call, WizardContext ctx, JsonObject step)
+    private static string AskFans(McpCallContext call, WizardContext ctx, JsonObject step, string lang)
     {
         var question = step["questions"]![0]!.AsObject();
         var columns = question["columns"]!.AsObject();
@@ -101,14 +101,14 @@ internal static class WizardForms
             var prefill = row["prefill"] as JsonObject ?? new JsonObject();
             var properties = new JsonObject
             {
-                ["position"] = Choice("Position", columns["position"] as JsonArray, prefill["position"]),
-                ["direction"] = Choice("Airflow direction", columns["direction"] as JsonArray, prefill["direction"]),
-                ["sizeMm"] = new JsonObject { ["type"] = "integer", ["title"] = "Fan size (mm)", ["minimum"] = 40, ["maximum"] = 420, ["default"] = prefill["sizeMm"]?.DeepClone() ?? 120 },
-                ["count"] = new JsonObject { ["type"] = "integer", ["title"] = "Fans on this output", ["minimum"] = 1, ["maximum"] = 12, ["default"] = prefill["count"]?.DeepClone() ?? 1 },
-                ["model"] = new JsonObject { ["type"] = "string", ["title"] = "Fan model (optional)", ["default"] = prefill["model"]?.DeepClone() ?? "" },
+                ["position"] = Choice(Loc.Say(lang, "Position", "Position"), columns["position"] as JsonArray, prefill["position"]),
+                ["direction"] = Choice(Loc.Say(lang, "Airflow direction", "Luftrichtung"), columns["direction"] as JsonArray, prefill["direction"]),
+                ["sizeMm"] = new JsonObject { ["type"] = "integer", ["title"] = Loc.Say(lang, "Fan size (mm)", "Lüftergröße (mm)"), ["minimum"] = 40, ["maximum"] = 420, ["default"] = prefill["sizeMm"]?.DeepClone() ?? 120 },
+                ["count"] = new JsonObject { ["type"] = "integer", ["title"] = Loc.Say(lang, "Fans on this output", "Lüfter an diesem Ausgang"), ["minimum"] = 1, ["maximum"] = 12, ["default"] = prefill["count"]?.DeepClone() ?? 1 },
+                ["model"] = new JsonObject { ["type"] = "string", ["title"] = Loc.Say(lang, "Fan model (optional)", "Lüftermodell (optional)"), ["default"] = prefill["model"]?.DeepClone() ?? "" },
             };
-            var rpm = row["rpm"] is JsonValue rv && rv.TryGetValue<double>(out var r) ? $" (currently {r:0} RPM)" : "";
-            var result = call.Elicit($"Fan output {i + 1}/{rows.Count}: '{row["name"]}'{rpm}. Where is it and which way does it blow?",
+            var rpm = row["rpm"] is JsonValue rv && rv.TryGetValue<double>(out var r) ? Loc.Say(lang, $" (currently {r:0} RPM)", $" (aktuell {r:0} RPM)") : "";
+            var result = call.Elicit(Loc.Say(lang, $"Fan output {i + 1}/{rows.Count}: '{row["name"]}'{rpm}. Where is it and which way does it blow?", $"Lüfterausgang {i + 1}/{rows.Count}: „{row["name"]}“{rpm}. Wo sitzt er und in welche Richtung bläst er?"),
                 new JsonObject { ["type"] = "object", ["properties"] = properties, ["required"] = new JsonArray("position", "direction") }, FormTimeout)
                 ?? throw new ToolException("The client does not support forms.");
             var action = result["action"]?.ToString() ?? "cancel";

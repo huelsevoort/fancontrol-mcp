@@ -31,8 +31,9 @@ internal static class SetupWizard
     ];
 
     /// <summary>Builds the wizard state: all steps with questions, prefilled values, completion and the next step.</summary>
-    public static JsonObject State(JsonObject profile, JsonObject detection)
+    public static JsonObject State(JsonObject profile, JsonObject detection, string language = "en")
     {
+        var lang = Loc.Normalize(language);
         var steps = new JsonArray
         {
             Step("goal", "Goal", "Decides where curves end, how warm components may run and how aggressive smoothing is.", profile,
@@ -101,8 +102,10 @@ internal static class SetupWizard
         };
 
         var next = steps.OfType<JsonObject>().FirstOrDefault(s => s["complete"]?.GetValue<bool>() != true);
+        Loc.Translate(steps, lang);
         return new JsonObject
         {
+            ["language"] = lang,
             ["instructions"] =
                 "Guide the user through the steps in order, one step at a time. Ask the step's questions in the user's language, " +
                 "offer the options, show detected/prefilled values for confirmation and skip what the user does not know. " +

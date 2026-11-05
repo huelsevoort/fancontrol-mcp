@@ -389,6 +389,33 @@ void WizardTests()
     Check("plan AIO: radiator on liquid sensor", aioActs.Any(a => a["name"]?.ToString() == "MCP Radiator" && a["source"]?.ToString() == "/aio/liquid"));
     Check("plan AIO: bottom radiator warning", aioPlan["warnings"]!.AsArray().Any(w => w!.ToString().Contains("Bottom-mounted radiator")));
 
+    // German: every user-facing text of the wizard and the plan must be translated.
+    var deState = FanControl.MCP.Wizard.SetupWizard.State(profile, detection, "de");
+    var untranslated = new List<string>();
+    void Collect(JsonNode? n)
+    {
+        if (n is JsonObject o)
+        {
+            foreach (var (k, v) in o)
+            {
+                if (k is "title" or "why" or "prompt" or "label" or "hint" && v is JsonValue sv && sv.TryGetValue<string>(out var s)
+                    && FanControl.MCP.Wizard.Loc.T("de", s) == s && System.Text.RegularExpressions.Regex.IsMatch(s, @"\b(the|and|your|you|of|for|with|is|are|Which|What|How|Where|Does)\b"))
+                    untranslated.Add(s);
+                else Collect(v);
+            }
+        }
+        else if (n is JsonArray a) foreach (var i in a) Collect(i);
+    }
+    Collect(deState["steps"]);
+    Check("German wizard fully translated", untranslated.Count == 0, string.Join(" | ", untranslated.Take(5)));
+    Check("German step title", deState["steps"]![0]!["title"]!.ToString() == "Ziel" && deState["language"]?.ToString() == "de");
+    var dePlan = FanControl.MCP.Wizard.BaselinePlanner.Plan(profile, detection, null, "de");
+    var englishLines = dePlan["summary"]!.AsArray().Concat(dePlan["warnings"]!.AsArray()).Select(x => x!.ToString())
+        .Where(x => System.Text.RegularExpressions.Regex.IsMatch(x, @"\b(the|and|follow|floor|fans)\b")).ToList();
+    Check("German plan texts", englishLines.Count == 0 && dePlan["goalLabel"]?.ToString() == "Am leisesten ohne Leistungsverlust", string.Join(" | ", englishLines.Take(3)));
+    var enState = FanControl.MCP.Wizard.SetupWizard.State(profile, detection);
+    Check("English stays default", enState["steps"]![0]!["title"]!.ToString() == "Goal");
+
     // Profile merge: fans merged by controlId.
     var merged = FanControl.MCP.Wizard.SystemProfile.MergePatch(profile, JsonNode.Parse("""{"fans":[{"controlId":"/lpc/nct6799d/control/2","sizeMm":140}],"goal":{"notes":"x"}}"""));
     var front = merged["fans"]!.AsArray().First(f => f?["controlId"]?.ToString() == "/lpc/nct6799d/control/2");
