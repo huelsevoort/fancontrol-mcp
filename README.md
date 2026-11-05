@@ -1,4 +1,6 @@
-# FanControl MCP
+# fancontrol-mcp
+
+**Open Source FanControl plugin that allows your AI models to find the ideal fan settings for your setup.**
 
 A [FanControl](https://getfancontrol.com) plugin that runs a **Model Context Protocol (MCP) server inside FanControl**, so AI assistants
 (Claude, ChatGPT/Codex, Copilot, Cursor …) can read temperatures and fan speeds, tune fan curves with built-in expert knowledge,
