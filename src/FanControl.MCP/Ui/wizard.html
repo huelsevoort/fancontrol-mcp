@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>FanControl setup</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --color-background-primary: light-dark(#ffffff, #1c1c1c);
+    --color-background-secondary: light-dark(#f5f5f4, #262626);
+    --color-background-tertiary: light-dark(#ebebea, #303030);
+    --color-text-primary: light-dark(#1c1917, #fafaf9);
+    --color-text-secondary: light-dark(#57534e, #a8a29e);
+    --color-border-primary: light-dark(#d6d3d1, #44403c);
+    --color-border-secondary: light-dark(#e7e5e4, #2f2f2f);
+    --color-ring-primary: light-dark(#2563eb, #60a5fa);
+    --color-background-info: light-dark(#eff6ff, #172036);
+    --color-text-info: light-dark(#1d4ed8, #93c5fd);
+    --color-background-warning: light-dark(#fffbeb, #2b2210);
+    --color-text-warning: light-dark(#b45309, #fbbf24);
+    --color-text-success: light-dark(#15803d, #4ade80);
+    --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --border-radius-sm: 6px;
+    --border-radius-md: 10px;
+    --border-radius-lg: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; }
+  body { font-family: var(--font-sans); color: var(--color-text-primary); padding: 12px; font-size: 14px; line-height: 1.45; }
+  h1 { font-size: 17px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .muted { color: var(--color-text-secondary); }
+  .small { font-size: 12.5px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { border: 1px solid var(--color-border-primary); background: var(--color-background-primary); color: var(--color-text-secondary);
+          border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .chip.done { color: var(--color-text-success); border-color: var(--color-text-success); }
+  .chip.active { color: var(--color-text-primary); border-color: var(--color-ring-primary); box-shadow: 0 0 0 1px var(--color-ring-primary); }
+  .card { background: var(--color-background-secondary); border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-lg); padding: 14px; margin-bottom: 12px; }
+  .q { margin-top: 14px; }
+  .q > label, .q > .label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+  .tile { text-align: left; border: 1px solid var(--color-border-primary); background: var(--color-background-primary); color: inherit;
+          border-radius: var(--border-radius-md); padding: 9px 11px; font: inherit; cursor: pointer; }
+  .tile b { display: block; font-weight: 600; }
+  .tile span { display: block; color: var(--color-text-secondary); font-size: 12.5px; margin-top: 2px; }
+  .tile.on { border-color: var(--color-ring-primary); box-shadow: 0 0 0 1px var(--color-ring-primary); background: var(--color-background-info); }
+  input, select { font: inherit; color: inherit; background: var(--color-background-primary); border: 1px solid var(--color-border-primary);
+                  border-radius: var(--border-radius-sm); padding: 6px 8px; width: 100%; }
+  input:focus, select:focus, .tile:focus-visible, button:focus-visible { outline: 2px solid var(--color-ring-primary); outline-offset: 1px; }
+  .fan { display: grid; grid-template-columns: minmax(130px, 1.3fr) 1.4fr 1fr 70px 60px 1.4fr; gap: 6px; align-items: center; padding: 6px 0;
+         border-top: 1px solid var(--color-border-secondary); }
+  .fan.head { border-top: 0; color: var(--color-text-secondary); font-size: 12px; padding-top: 0; }
+  .fan .name { font-weight: 600; }
+  .fan .name small { display: block; font-weight: 400; color: var(--color-text-secondary); }
+  @media (max-width: 640px) { .fan { grid-template-columns: 1fr 1fr; } .fan.head { display: none; } .fan .name { grid-column: 1 / -1; } }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+  button.primary, button.secondary { border-radius: var(--border-radius-md); padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary { background: var(--color-ring-primary); color: #fff; border: 0; }
+  button.secondary { background: transparent; color: var(--color-text-primary); border: 1px solid var(--color-border-primary); }
+  button:disabled { opacity: .5; cursor: default; }
+  .note { border-radius: var(--border-radius-md); padding: 8px 11px; margin-top: 8px; font-size: 13px; }
+  .note.info { background: var(--color-background-info); color: var(--color-text-info); }
+  .note.warn { background: var(--color-background-warning); color: var(--color-text-warning); }
+  ul { margin: 6px 0 0; padding-left: 18px; }
+  .curves { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+  .curve { background: var(--color-background-primary); border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 10px; }
+  .curve svg { width: 100%; height: 110px; display: block; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  td, th { text-align: left; padding: 5px 6px; border-top: 1px solid var(--color-border-secondary); }
+  th { color: var(--color-text-secondary); font-weight: 500; }
+  .mono { font-family: var(--font-mono); font-size: 12px; }
+  #status { min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">FanControl setup</h1>
+  <div id="status" class="muted small">Connecting…</div>
+</header>
+<div id="chips" class="chips"></div>
+<div id="main"></div>
+<script>
+(() => {
+  "use strict";
+  // ---------------------------------------------------------------- i18n (chrome only; questions come from the server)
+  const T = {
+    en: { title: "FanControl setup", save: "Save & continue", skip: "Skip", back: "Back", plan: "Create plan", apply: "Apply with assistant",
+          replan: "Recalculate", saving: "Saving…", ready: "Ready", complete: "All set — create the baseline plan.", detected: "Detected",
+          fans: "Fan output", position: "Position", direction: "Direction", size: "Size mm", count: "Count", model: "Model",
+          noTools: "This host cannot call tools from the view: answer in the chat instead.", summary: "What the plan does", warnings: "Check these",
+          assignments: "Assignments", curve: "Curve", minimum: "Min", offset: "Offset", planned: "Plan ready — nothing has been changed yet.",
+          sent: "Sent to the assistant.", error: "Error", prefilled: "suggested", step: "Step", constant: "constant" },
+    de: { title: "FanControl-Einrichtung", save: "Speichern & weiter", skip: "Überspringen", back: "Zurück", plan: "Plan erstellen", apply: "Mit Assistent anwenden",
+          replan: "Neu berechnen", saving: "Speichere…", ready: "Bereit", complete: "Alles beisammen – jetzt den Basis-Plan erstellen.", detected: "Erkannt",
+          fans: "Lüfterausgang", position: "Position", direction: "Richtung", size: "Größe mm", count: "Anzahl", model: "Modell",
+          noTools: "Dieser Host kann aus der Ansicht keine Tools aufrufen: bitte im Chat antworten.", summary: "Was der Plan macht", warnings: "Bitte prüfen",
+          assignments: "Zuordnungen", curve: "Kurve", minimum: "Min", offset: "Offset", planned: "Plan fertig – noch wurde nichts verändert.",
+          sent: "An den Assistenten geschickt.", error: "Fehler", prefilled: "Vorschlag", step: "Schritt", constant: "konstant" },
+  };
+  let t = T.en;
+  let lang = "en";   // language requested from the server for questions, options and plan texts
+
+  // ---------------------------------------------------------------- JSON-RPC over postMessage (MCP Apps 2026-01-26)
+  const $ = (id) => document.getElementById(id);
+  let nextId = 1; const pending = new Map(); let hostCaps = {};
+  const send = (m) => window.parent.postMessage(m, "*");
+  const notify = (method, params) => send({ jsonrpc: "2.0", method, params: params ?? {} });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = nextId++; pending.set(id, { resolve, reject }); send({ jsonrpc: "2.0", id, method, params: params ?? {} });
+    setTimeout(() => { if (pending.delete(id)) reject(new Error("timeout")); }, 60000);
+  });
+  const reply = (id, result) => send({ jsonrpc: "2.0", id, result });
+  async function callTool(name, args) {
+    const r = await request("tools/call", { name, arguments: args || {} });
+    if (r && r.isError) throw new Error(((r.content || [])[0] || {}).text || "tool error");
+    return r && r.structuredContent ? r.structuredContent : JSON.parse(((r.content || [])[0] || {}).text || "{}");
+  }
+
+  // ---------------------------------------------------------------- state
+  let state = null;      // setup_wizard result
+  let stepId = null;     // visible step
+  let draft = {};        // question id -> value for the visible step
+  let fanDraft = {};     // controlId -> {position,...}
+  let plan = null;
+
+  const el = (tag, attrs, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? "" : v);
+    }
+    for (const k of kids.flat()) if (k !== null && k !== undefined) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  const status = (s) => { $("status").textContent = s; };
+
+  function setPath(obj, path, value) {
+    const parts = path.split("."); let o = obj;
+    for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]] ??= {};
+    o[parts[parts.length - 1]] = value;
+  }
+
+  // ---------------------------------------------------------------- rendering
+  function render() {
+    if (!state) return;
+    const steps = state.steps || [];
+    if (!stepId || !steps.some(s => s.id === stepId)) stepId = state.nextStep || steps[steps.length - 1]?.id;
+    $("chips").replaceChildren(...steps.map((s, i) => el("button", {
+      class: "chip" + (s.complete ? " done" : "") + (s.id === stepId && !plan ? " active" : ""),
+      onclick: () => { plan = null; openStep(s.id); } }, (s.complete ? "✓ " : `${i + 1}. `) + s.title)));
+    if (plan) return renderPlan();
+    const step = steps.find(s => s.id === stepId);
+    const card = el("div", { class: "card" },
+      el("h2", {}, `${t.step} ${steps.indexOf(step) + 1}/${steps.length} · ${step.title}`),
+      el("div", { class: "muted small" }, step.why));
+    for (const q of step.questions || []) card.append(q.type === "fan_table" ? renderFans(q) : renderQuestion(q));
+    if (!hostCaps.serverTools) card.append(el("div", { class: "note warn" }, t.noTools));
+    const idx = steps.indexOf(step);
+    card.append(el("div", { class: "actions" },
+      idx > 0 ? el("button", { class: "secondary", onclick: () => openStep(steps[idx - 1].id) }, t.back) : null,
+      el("button", { class: "secondary", onclick: () => openStep(steps[Math.min(idx + 1, steps.length - 1)].id) }, t.skip),
+      el("button", { class: "primary", disabled: !hostCaps.serverTools, onclick: saveStep }, t.save)));
+    const main = [card];
+    if (state.complete) main.push(el("div", { class: "card" }, el("div", {}, t.complete),
+      el("div", { class: "actions" }, el("button", { class: "primary", disabled: !hostCaps.serverTools, onclick: makePlan }, t.plan))));
+    if (state.detected) main.push(renderDetected(state.detected));
+    $("main").replaceChildren(...main);
+  }
+
+  function openStep(id) {
+    stepId = id; draft = {}; fanDraft = {};
+    const step = state.steps.find(s => s.id === id);
+    for (const q of step.questions || []) {
+      if (q.type === "fan_table") for (const r of q.rows || []) fanDraft[r.controlId] = Object.assign({}, r.prefill || {});
+      else { const v = q.answer ?? q.prefill; if (v !== undefined && v !== null) draft[q.id] = v; }
+    }
+    render();
+  }
+
+  function renderQuestion(q) {
+    const wrap = el("div", { class: "q" }, el("div", { class: "label" }, q.prompt, q.required ? " *" : ""));
+    if (q.type === "choice" || q.type === "multi") {
+      const multi = q.type === "multi";
+      const tiles = el("div", { class: "tiles", role: multi ? "group" : "radiogroup" });
+      for (const o of q.options || []) {
+        const cur = draft[q.id];
+        const on = multi ? Array.isArray(cur) && cur.includes(o.value) : cur === o.value;
+        tiles.append(el("button", { class: "tile" + (on ? " on" : ""), role: multi ? "checkbox" : "radio", "aria-checked": on ? "true" : "false",
+          onclick: () => {
+            if (multi) { const a = new Set(Array.isArray(draft[q.id]) ? draft[q.id] : []); a.has(o.value) ? a.delete(o.value) : a.add(o.value); draft[q.id] = [...a]; }
+            else draft[q.id] = o.value;
+            render();
+          } }, el("b", {}, o.label), o.hint ? el("span", {}, o.hint) : null));
+      }
+      wrap.append(tiles);
+    } else {
+      const input = el("input", { type: q.type === "number" ? "number" : "text", min: q.min, max: q.max, value: draft[q.id] ?? "",
+        oninput: (e) => { draft[q.id] = q.type === "number" ? (e.target.value === "" ? undefined : Number(e.target.value)) : e.target.value; } });
+      wrap.append(input);
+    }
+    return wrap;
+  }
+
+  function renderFans(q) {
+    const sel = (label, opts, value, onchange) => el("select", { onchange, "aria-label": label, title: label }, el("option", { value: "" }, label + " …"),
+      ...opts.map(o => el("option", { value: o.value, selected: o.value === value }, o.label)));
+    const box = el("div", { class: "q" }, el("div", { class: "label" }, q.prompt),
+      el("div", { class: "fan head" }, el("div", {}, t.fans), el("div", {}, t.position), el("div", {}, t.direction), el("div", {}, t.size), el("div", {}, t.count), el("div", {}, t.model)));
+    for (const r of q.rows || []) {
+      if (r.connected === false) continue;
+      const d = fanDraft[r.controlId] ??= {};
+      box.append(el("div", { class: "fan" },
+        el("div", { class: "name" }, r.name, el("small", {}, r.rpm != null ? `${Math.round(r.rpm)} RPM` : "", d.guessed ? ` · ${t.prefilled}` : "")),
+        sel(t.position, q.columns.position, d.position, (e) => { d.position = e.target.value; delete d.guessed; }),
+        sel(t.direction, q.columns.direction, d.direction, (e) => { d.direction = e.target.value; delete d.guessed; }),
+        el("input", { type: "number", min: 40, max: 420, value: d.sizeMm ?? "", placeholder: t.size, "aria-label": t.size, title: t.size,
+          oninput: (e) => d.sizeMm = e.target.value ? Number(e.target.value) : undefined }),
+        el("input", { type: "number", min: 1, max: 12, value: d.count ?? 1, placeholder: t.count, "aria-label": t.count, title: t.count,
+          oninput: (e) => d.count = e.target.value ? Number(e.target.value) : undefined }),
+        el("input", { type: "text", value: d.model ?? "", placeholder: t.model, "aria-label": t.model, title: t.model, oninput: (e) => d.model = e.target.value })));
+    }
+    return box;
+  }
+
+  function renderDetected(d) {
+    return el("div", { class: "card small" }, el("b", {}, t.detected + ": "),
+      [d.cpu, ...(d.gpus || []), d.mainboard].filter(Boolean).join(" · "),
+      (d.fanSoftwareRunning || []).length ? el("div", { class: "note warn" }, d.fanSoftwareRunning.map(s => `${s.product}: ${s.risk}`).join(" ")) : null);
+  }
+
+  function renderPlan() {
+    const curves = (plan.actions || []).filter(a => a.type === "upsert_curve");
+    const assigns = (plan.actions || []).filter(a => a.type === "assign");
+    const card = el("div", { class: "card" },
+      el("h2", {}, plan.goalLabel || plan.goal),
+      el("div", { class: "note info" }, t.planned),
+      el("div", { class: "q" }, el("div", { class: "label" }, t.summary), el("ul", {}, (plan.summary || []).map(s => el("li", {}, s)))),
+      (plan.warnings || []).length ? el("div", { class: "q" }, el("div", { class: "label" }, t.warnings), ...(plan.warnings || []).map(w => el("div", { class: "note warn" }, w))) : null,
+      el("div", { class: "curves" }, curves.map(curveCard)),
+      el("table", {}, el("tr", {}, el("th", {}, t.fans), el("th", {}, t.curve), el("th", {}, t.minimum), el("th", {}, t.offset)),
+        assigns.map(a => el("tr", {}, el("td", {}, a.controlName), el("td", {}, a.curve), el("td", {}, `${a.minimum_percent} %`), el("td", {}, `${a.offset > 0 ? "+" : ""}${a.offset} %`)))),
+      el("div", { class: "actions" },
+        el("button", { class: "secondary", onclick: () => { plan = null; render(); } }, t.back),
+        el("button", { class: "secondary", onclick: makePlan }, t.replan),
+        el("button", { class: "primary", onclick: applyViaAssistant }, t.apply)));
+    $("main").replaceChildren(card);
+  }
+
+  function curveCard(c) {
+    const W = 220, H = 110, P = 18;
+    if (c.curveType === "flat") return el("div", { class: "curve" }, el("b", {}, c.name), el("div", { class: "muted small" }, `${c.percent} % ${t.constant}`));
+    const pts = c.points || [];
+    const x = (v) => P + (v - 20) / 80 * (W - P - 6), y = (v) => H - P - v / 100 * (H - P - 6);
+    const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `${c.name}: ${pts.map(p => `${p[0]}°C ${p[1]}%`).join(", ")}`);
+    const add = (tag, a) => { const n = document.createElementNS(ns, tag); for (const k in a) n.setAttribute(k, a[k]); svg.append(n); return n; };
+    for (const g of [0, 50, 100]) add("line", { x1: P, x2: W - 6, y1: y(g), y2: y(g), stroke: "currentColor", "stroke-opacity": .12 });
+    for (const g of [20, 40, 60, 80, 100]) { const tx = add("text", { x: x(g), y: H - 4, "font-size": 9, "text-anchor": "middle", fill: "currentColor", "fill-opacity": .55 }); tx.textContent = g + "°"; }
+    const line = [[20, pts[0]?.[1] ?? 0], ...pts, [100, pts[pts.length - 1]?.[1] ?? 100]];
+    add("polyline", { points: line.map(p => `${x(p[0])},${y(p[1])}`).join(" "), fill: "none", stroke: "var(--color-ring-primary)", "stroke-width": 2 });
+    for (const p of pts) add("circle", { cx: x(p[0]), cy: y(p[1]), r: 3, fill: "var(--color-ring-primary)" });
+    const src = String(c.source || "").replace(/^\$/, "");
+    return el("div", { class: "curve" }, el("b", {}, c.name), el("div", { class: "muted small" }, src), svg,
+      el("div", { class: "muted small mono" }, pts.map(p => `${p[0]}→${p[1]}`).join("  ")));
+  }
+
+  // ---------------------------------------------------------------- actions
+  async function saveStep() {
+    const step = state.steps.find(s => s.id === stepId);
+    const patch = {};
+    if (step.id === "fans") {
+      patch.fans = Object.entries(fanDraft).filter(([, d]) => d.position || d.direction)
+        .map(([controlId, d]) => { const f = { controlId }; for (const k of ["position", "direction", "sizeMm", "count", "model"]) if (d[k] !== undefined && d[k] !== "") f[k] = d[k]; return f; });
+    } else {
+      for (const [k, v] of Object.entries(draft)) if (v !== undefined && v !== "" && !(Array.isArray(v) && !v.length)) setPath(patch, k, v);
+    }
+    try {
+      status(t.saving);
+      await callTool("save_system_profile", { patch });
+      state = await callTool("setup_wizard", { language: lang });
+      const steps = state.steps; const idx = steps.findIndex(s => s.id === stepId);
+      openStep(state.complete ? stepId : (steps.slice(idx + 1).find(s => !s.complete) || steps.find(s => !s.complete) || steps[idx]).id);
+      status(t.ready);
+      request("ui/update-model-context", { content: [{ type: "text", text: `User saved wizard step '${step.title}' in the setup view.` }] }).catch(() => {});
+    } catch (e) { status(`${t.error}: ${e.message}`); }
+  }
+
+  async function makePlan() {
+    try { status(t.saving); plan = await callTool("propose_baseline_config", { language: lang }); status(t.ready); render(); }
+    catch (e) { status(`${t.error}: ${e.message}`); }
+  }
+
+  async function applyViaAssistant() {
+    if (!plan) return;
+    const text = (t === T.de)
+      ? `Ich habe im Setup-Assistenten den Plan ${plan.planId} (${plan.goalLabel}) geprüft. Bitte erkläre ihn kurz, wende ihn mit apply_baseline_config an und hilf mir danach, ihn unter Last zu testen.`
+      : `I reviewed plan ${plan.planId} (${plan.goalLabel}) in the setup view. Please explain it briefly, apply it with apply_baseline_config and then help me validate it under load.`;
+    try { await request("ui/message", { role: "user", content: { type: "text", text } }); status(t.sent); }
+    catch (e) { status(`${t.error}: ${e.message}`); }
+  }
+
+  // ---------------------------------------------------------------- host plumbing
+  function applyHostContext(ctx) {
+    if (!ctx) return;
+    const root = document.documentElement;
+    if (ctx.theme) root.style.colorScheme = ctx.theme;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const [k, v] of Object.entries(vars)) if (v) root.style.setProperty(k, v);
+    if (ctx.locale) { lang = String(ctx.locale).toLowerCase().startsWith("de") ? "de" : "en"; t = T[lang]; document.documentElement.lang = lang; $("title").textContent = t.title; }
+  }
+
+  function onToolResult(result) {
+    if (!result || result.isError) { status(`${t.error}: ${((result?.content || [])[0] || {}).text || ""}`); return; }
+    const sc = result.structuredContent;
+    if (sc && sc.steps) {
+      state = sc; openStep(sc.nextStep || sc.steps[0].id); status(t.ready);
+      // The assistant may have called the tool without (or with another) language: reload in the host's language.
+      if (sc.language && sc.language !== lang && hostCaps.serverTools) {
+        callTool("setup_wizard", { language: lang }).then(s => { state = s; openStep(stepId); }).catch(() => {});
+      }
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.method === undefined && msg.id !== undefined) {
+      const p = pending.get(msg.id); if (!p) return; pending.delete(msg.id);
+      msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result); return;
+    }
+    if (msg.id !== undefined) {
+      if (msg.method === "ping" || msg.method === "ui/resource-teardown") return reply(msg.id, {});
+      return send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Method not found" } });
+    }
+    if (msg.method === "ui/notifications/tool-result") onToolResult(msg.params);
+    else if (msg.method === "ui/notifications/host-context-changed") { applyHostContext(msg.params); render(); }
+  });
+
+  let lastH = 0, scheduled = false;
+  function reportSize() {
+    if (scheduled) return; scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      const html = document.documentElement, prev = html.style.height; html.style.height = "max-content";
+      const height = Math.ceil(html.getBoundingClientRect().height); html.style.height = prev;
+      if (height !== lastH) { lastH = height; notify("ui/notifications/size-changed", { width: Math.ceil(window.innerWidth), height }); }
+    });
+  }
+
+  (async () => {
+    try {
+      const init = await request("ui/initialize", { appInfo: { name: "fancontrol-setup", version: "1.1.0" },
+        appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] }, protocolVersion: "2026-01-26" });
+      hostCaps = init.hostCapabilities || {};
+      applyHostContext(init.hostContext);
+      notify("ui/notifications/initialized");
+      status(t.ready);
+      new ResizeObserver(reportSize).observe(document.body);
+      reportSize();
+      // Hosts push the tool result after 'initialized'; if none arrives, load the state ourselves.
+      setTimeout(async () => { if (!state && hostCaps.serverTools) { try { onToolResult({ structuredContent: await callTool("setup_wizard", { language: lang }) }); } catch (e) { status(`${t.error}: ${e.message}`); } } }, 1500);
+    } catch (e) { status("Handshake failed: " + e.message); }
+  })();
+})();
+</script>
+</body>
+</html>

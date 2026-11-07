@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FanControl.MCP/FanControl.MCP.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SmokeTest/SmokeTest.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    FanControl plugin that hosts a Model Context Protocol (MCP) server inside FanControl.
+    FanControl only loads plugin assemblies named "FanControl.<Name>.dll" from its Plugins folder.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22621.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>FanControl.MCP</AssemblyName>
+    <RootNamespace>FanControl.MCP</RootNamespace>
+    <Version>1.1.0</Version>
+    <Product>FanControl MCP Plugin</Product>
+    <Description>Exposes FanControl sensors, controls and fan curves to AI assistants via the Model Context Protocol.</Description>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Folder of the FanControl installation the plugin is compiled against. Override with -p:FanControlDir=... -->
+    <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Provided by FanControl at runtime: never copy them next to the plugin. -->
+    <Reference Include="FanControl.Plugins">
+      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FanControl.Library">
+      <HintPath>$(FanControlDir)\FanControl.Library.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- FanControl.Library is compiled against WPF's WindowsBase; compile-time only, FanControl provides the runtime. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tuning guides served as MCP resource / prompt / tool ("built-in skill"). -->
+    <EmbeddedResource Include="Guides\*.md" LogicalName="FanControl.MCP.Guides.%(Filename)%(Extension)" />
+    <!-- MCP Apps view of the setup wizard (single self-contained HTML file). -->
+    <EmbeddedResource Include="Ui\*.html" LogicalName="FanControl.MCP.Ui.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SmokeTest" />
+  </ItemGroup>
+
+</Project>
+

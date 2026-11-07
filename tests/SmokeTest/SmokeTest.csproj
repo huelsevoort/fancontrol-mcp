@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Smoke test for the MCP endpoint. See README.md ("Testen") for usage.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22621.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FanControl.MCP\FanControl.MCP.csproj" />
+    <!-- Copied locally so the plugin can be hosted outside FanControl. -->
+    <Reference Include="FanControl.Plugins">
+      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="FanControl.Library">
+      <HintPath>$(FanControlDir)\FanControl.Library.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
+
+</Project>
