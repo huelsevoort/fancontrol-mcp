@@ -140,7 +140,7 @@ try
     var guideTool = await Rpc("tools/call", new JsonObject { ["name"] = "get_fan_curve_guide", ["arguments"] = new JsonObject() });
     Check("get_fan_curve_guide returns plain markdown", guideTool?["result"]?["content"]?[0]?["text"]?.GetValue<string>().StartsWith("# FanControl") == true);
 
-    if (remote is null) { AnalyzerTests(); WizardTests(); }
+    if (remote is null) { AnalyzerTests(); WizardTests(); RestoreMatchingTests(); }
 
     if (remote is not null && args.Contains("--elicit")) await ElicitationTest();
 
@@ -476,6 +476,31 @@ void AnalyzerTests()
     Check("analyzer: critical first", result["findings"]![0]!["severity"]!.GetValue<string>() == "critical");
     if (failures > 0) Console.WriteLine(string.Join("\n", codes));
 }
+
+// Restore points must survive FanControl rebuilding its objects (config load / "discard changes"):
+// snapshot entries are matched to live objects by key, not by reference.
+void RestoreMatchingTests()
+{
+    var oldA = new Keyed("Time/CPU avg"); var oldB = new Keyed("Radiator");
+    var rebuiltA = new Keyed("Time/CPU avg"); var rebuiltB = new Keyed("radiator"); var other = new Keyed("GPU");
+    Func<object?, string?> key = o => (o as Keyed)?.Key;
+
+    var live = new List<object> { rebuiltA, rebuiltB, other };
+    Check("restore: rebuilt object found by key", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(live, oldA, "Time/CPU avg", key), rebuiltA));
+    Check("restore: key match ignores case", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(live, oldB, "Radiator", key), rebuiltB));
+    var liveWithOld = new List<object> { rebuiltA, oldA };
+    Check("restore: same reference preferred", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(liveWithOld, oldA, "Time/CPU avg", key), oldA));
+    Check("restore: missing object -> null (recreate)", FanControl.MCP.Engine.EngineBridge.FindLive([other], oldA, "Time/CPU avg", key) is null);
+
+    Check("restore: curve kind from class name", FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new GraphFanCurve(), "FanCurve", out var k1) && k1 == TestKind.Graph);
+    Check("restore: sensor kind from class name", FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new TimeAverageSensor(), "Sensor", out var k2) && k2 == TestKind.TimeAverage);
+    Check("restore: unknown kind rejected", !FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new Keyed("x"), "Sensor", out _));
+}
+
+sealed record Keyed(string Key);
+enum TestKind { Graph, TimeAverage }
+sealed class GraphFanCurve;
+sealed class TimeAverageSensor;
 
 sealed class Container : IPluginSensorsContainer
 {

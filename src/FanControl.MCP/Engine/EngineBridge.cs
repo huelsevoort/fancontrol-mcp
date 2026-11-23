@@ -424,22 +424,66 @@ internal sealed class EngineBridge
                  ?? throw new ToolException(id is null ? "No restore point exists yet." : $"Restore point '{id}' not found.");
         }
 
+        // Match snapshot entries to the *current* engine objects by identity (control/sensor identifier, curve
+        // name), never by object reference: FanControl rebuilds every control, curve and sensor object when a
+        // config is loaded or changes are discarded in its UI. Comparing references then matched nothing, the
+        // configs went to detached objects and every live curve and sensor was deleted.
         var removedCurves = new JsonArray();
         var removedSensors = new JsonArray();
+        var recreated = new JsonArray();
+        var skipped = new JsonArray();
         OnFanControlThread(() =>
         {
-            foreach (var (target, config) in rp.Controls) ApplyConfig(target, config);
-            foreach (var (target, config) in rp.Sensors) ApplyConfig(target, config);
-            foreach (var (target, config) in rp.Curves) ApplyConfig(target, config);
+            // 1. Custom sensors first: curves reference them.
+            var liveSensors = _engine.CustomSensors.Cast<object>().ToList();
+            foreach (var (target, config) in rp.Sensors)
+            {
+                var key = SensorKey(target);
+                var live = FindLive(liveSensors, target, key, SensorKey);
+                if (live is null && key is not null && TryParseKind<CustomSensorType>(target, "Sensor", out var kind))
+                {
+                    live = _engine.AddCustomSensor(kind, key[(key.IndexOf('/') + 1)..]);
+                    if (!string.Equals(SensorKey(live), key, StringComparison.OrdinalIgnoreCase))
+                        skipped.Add($"sensor '{key}' was recreated as '{SensorKey(live)}'");
+                    else recreated.Add(key);
+                }
+                if (live is not null) ApplyConfig(live, config);
+                else skipped.Add($"sensor '{key ?? "?"}' could not be recreated");
+            }
 
-            var keepCurves = rp.Curves.Select(c => c.Target).ToHashSet(ReferenceEqualityComparer.Instance);
-            foreach (var curve in _engine.FanCurves.Cast<object>().Where(c => !keepCurves.Contains(c)).ToList())
+            // 2. Fan curves.
+            var liveCurves = _engine.FanCurves.Cast<object>().ToList();
+            foreach (var (target, config) in rp.Curves)
+            {
+                var key = CurveKey(target);
+                var live = FindLive(liveCurves, target, key, CurveKey);
+                if (live is null && key is not null && TryParseKind<FanCurveType>(target, "FanCurve", out var kind))
+                {
+                    live = _engine.AddFanCurve(kind, key);
+                    recreated.Add(key);
+                }
+                if (live is not null) ApplyConfig(live, config);
+                else skipped.Add($"fan curve '{key ?? "?"}' could not be recreated");
+            }
+
+            // 3. Controls last: their config selects curves by name. Hardware controls cannot be created.
+            var liveControls = _engine.Controls.Cast<object>().ToList();
+            foreach (var (target, config) in rp.Controls)
+            {
+                var key = SensorKey(target);
+                if (FindLive(liveControls, target, key, SensorKey) is { } live) ApplyConfig(live, config);
+                else skipped.Add($"control '{key ?? "?"}' no longer exists");
+            }
+
+            // 4. Remove what was created after the snapshot (by identity).
+            var keepCurves = rp.Curves.Select(c => CurveKey(c.Target)).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var curve in _engine.FanCurves.Cast<object>().Where(c => CurveKey(c) is { } k && !keepCurves.Contains(k)).ToList())
             {
                 _engine.RemoveFanCurve((IFanCurveId)curve);
                 removedCurves.Add(((IFanCurveId)curve).Name);
             }
-            var keepSensors = rp.Sensors.Select(c => c.Target).ToHashSet(ReferenceEqualityComparer.Instance);
-            foreach (var sensor in _engine.CustomSensors.Cast<object>().Where(s => !keepSensors.Contains(s)).ToList())
+            var keepSensors = rp.Sensors.Select(s => SensorKey(s.Target)).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var sensor in _engine.CustomSensors.Cast<object>().Where(s => SensorKey(s) is { } k && !keepSensors.Contains(k)).ToList())
             {
                 _engine.RemoveCustomSensor((ISensorId)sensor);
                 removedSensors.Add(((ISensorId)sensor).Identifier);
@@ -450,7 +494,25 @@ internal sealed class EngineBridge
         result["restored"] = true;
         result["removedFanCurves"] = removedCurves;
         result["removedCustomSensors"] = removedSensors;
+        if (recreated.Count > 0) result["recreated"] = recreated;
+        if (skipped.Count > 0) result["warnings"] = skipped;
         return result;
+    }
+
+    private static string? CurveKey(object? o) => (o as IFanCurveId)?.Name;
+    private static string? SensorKey(object? o) => (o as ISensorId)?.Identifier;
+
+    /// <summary>The snapshot object itself if it is still live, otherwise the live object with the same key.</summary>
+    internal static object? FindLive(IReadOnlyList<object> live, object snapshotTarget, string? key, Func<object?, string?> keyOf)
+        => live.FirstOrDefault(o => ReferenceEquals(o, snapshotTarget))
+           ?? (key is null ? null : live.FirstOrDefault(o => string.Equals(keyOf(o), key, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>Maps an engine class name such as GraphFanCurve / TimeAverageSensor to its FanCurveType / CustomSensorType.</summary>
+    internal static bool TryParseKind<TEnum>(object target, string suffix, out TEnum kind) where TEnum : struct, Enum
+    {
+        var name = target.GetType().Name;
+        if (name.EndsWith(suffix, StringComparison.Ordinal)) name = name[..^suffix.Length];
+        return Enum.TryParse(name, ignoreCase: false, out kind);
     }
 
     private sealed record RestorePoint(string Id, string Label, DateTime Created,
