@@ -67,7 +67,7 @@ internal static class SetupAnalyzer
                 else if (src.Kind == Kind.Virtual)
                     findings.Add(new("info", target, "SOURCE_VIRTUAL", $"Driven by the MCP virtual sensor '{src.Name}'.", "Make sure it is combined (Mix Max) with a real temperature curve so the fan still reacts to heat."));
             }
-            else if (type is "GraphFanCurve" or "LinearFanCurve")
+            else if (type is "GraphFanCurve" or "LinearFanCurve" or "AutoFanCurve")
             {
                 findings.Add(new("critical", target, "SOURCE_NONE", "No temperature source selected.", "Select a source with update_fan_curve (temperature_source)."));
             }
@@ -101,6 +101,14 @@ internal static class SetupAnalyzer
                 minOut = Num(cfg, "minimumFanSpeed");
                 maxOut = Num(cfg, "maximumFanSpeed");
                 fullAt = maxOut >= 99.5 ? Num(cfg, "maximumTemperature") : null;
+            }
+            else if (type == "AutoFanCurve")
+            {
+                // FanControl's "Auto" curve steps between minFanSpeed and maxFanSpeed to hold the source
+                // between idleTemperature and loadTemperature; it never goes below minFanSpeed.
+                minOut = Num(cfg, "minFanSpeed");
+                maxOut = Num(cfg, "maxFanSpeed");
+                fullAt = maxOut >= 99.5 ? Num(cfg, "loadTemperature") : null;
             }
             else if (type == "FlatFanCurve")
             {

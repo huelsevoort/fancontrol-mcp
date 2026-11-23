@@ -437,6 +437,8 @@ void AnalyzerTests()
           {"name":"CPU raw","type":"GraphFanCurve","currentOutput":50,"config":{"points":[{"x":40,"y":0},{"x":95,"y":90}],"selectedTempSource":"/amdcpu/0/temperature/2","hysteresisConfig":{"hysteresisValueUp":0,"hysteresisValueDown":0,"responseTimeUp":0,"responseTimeDown":0,"ignoreHysteresisAtLimits":true}}},
           {"name":"Smooth","type":"GraphFanCurve","currentOutput":40,"config":{"points":[{"x":40,"y":30},{"x":60,"y":20},{"x":85,"y":100}],"selectedTempSource":"Time/CPU Avg.","hysteresisConfig":{"hysteresisValueUp":2,"hysteresisValueDown":2,"responseTimeUp":3,"responseTimeDown":5,"ignoreHysteresisAtLimits":true}}},
           {"name":"Unused","type":"FlatFanCurve","config":{"percent":50}},
+          {"name":"Auto floor","type":"AutoFanCurve","currentOutput":30,"config":{"selectedTempSource":"Time/CPU Avg.","step":2,"deadband":5,"selectedResponseTime":5,"minFanSpeed":30,"maxFanSpeed":100,"loadTemperature":70,"idleTemperature":35}},
+          {"name":"Auto zero","type":"AutoFanCurve","currentOutput":0,"config":{"selectedTempSource":"Time/CPU Avg.","step":2,"deadband":5,"selectedResponseTime":5,"minFanSpeed":0,"maxFanSpeed":100,"loadTemperature":70,"idleTemperature":35}},
           {"name":"Gone source","type":"GraphFanCurve","config":{"points":[{"x":30,"y":30},{"x":80,"y":100}],"selectedTempSource":"/does/not/exist","hysteresisConfig":{"hysteresisValueUp":2,"hysteresisValueDown":2,"responseTimeUp":3,"responseTimeDown":3,"ignoreHysteresisAtLimits":true}}}
         ]
         """)!.AsArray();
@@ -445,7 +447,9 @@ void AnalyzerTests()
           {"id":"c/cpu","name":"CPU","enabled":true,"manualControl":false,"fanCurve":"CPU raw","pairedFanSensorId":"f/1","stepUp":8,"stepDown":8,"start":16,"stop":7,"minimumPercent":0},
           {"id":"c/pump","name":"AIO Pump","enabled":true,"manualControl":true,"manualPercent":20,"fanCurve":"Smooth","pairedFanSensorId":"f/2","stepUp":8,"stepDown":8,"start":0,"stop":0},
           {"id":"c/rad","name":"Radiator Top","enabled":true,"manualControl":false,"fanCurve":"Smooth","pairedFanSensorId":"f/3","stepUp":5,"stepDown":20,"start":20,"stop":25},
-          {"id":"c/case","name":"Intake Front","enabled":true,"manualControl":false,"fanCurve":"Gone source","stepUp":8,"stepDown":4,"start":10,"stop":5}
+          {"id":"c/case","name":"Intake Front","enabled":true,"manualControl":false,"fanCurve":"Gone source","stepUp":8,"stepDown":4,"start":10,"stop":5},
+          {"id":"c/cpu2","name":"CPU Fan 2","enabled":true,"manualControl":false,"fanCurve":"Auto floor","pairedFanSensorId":"f/5","stepUp":8,"stepDown":4,"start":0,"stop":0,"minimumPercent":0},
+          {"id":"c/rad2","name":"Radiator Bottom","enabled":true,"manualControl":false,"fanCurve":"Auto zero","pairedFanSensorId":"f/6","stepUp":8,"stepDown":4,"start":0,"stop":0,"minimumPercent":0}
         ]
         """)!.AsArray();
 
@@ -467,6 +471,8 @@ void AnalyzerTests()
     Check("analyzer: missing source", HasCode("SOURCE_MISSING", "curve 'Gone source'"));
     Check("analyzer: not paired", HasCode("NOT_PAIRED", "control 'Intake Front'"));
     Check("analyzer: unused curve", HasCode("CURVE_UNUSED", "curve 'Unused'"));
+    Check("analyzer: auto curve floor respected", !HasCode("ZERO_RPM_CRITICAL", "control 'CPU Fan 2'"));
+    Check("analyzer: auto curve at 0 % flagged", HasCode("ZERO_RPM_CRITICAL", "control 'Radiator Bottom'"));
     Check("analyzer: critical first", result["findings"]![0]!["severity"]!.GetValue<string>() == "critical");
     if (failures > 0) Console.WriteLine(string.Join("\n", codes));
 }
