@@ -30,6 +30,31 @@ if (-not (Test-Path (Join-Path $FanControlDir "FanControl.exe"))) {
     throw "FanControl not found in '$FanControlDir'. Pass -FanControlDir <path>."
 }
 
+# FanControl ships a .NET Framework 4.8 edition and a .NET (Core) edition. This plugin targets .NET 10:
+# the .NET Framework edition cannot load it, and the resulting ReflectionTypeLoadException aborts
+# FanControl's whole sensor initialization (no fans, no temperatures, service crash loop).
+function Get-FanControlEdition([string]$dir) {
+    $lib = Join-Path $dir "FanControl.Library.dll"
+    if (-not (Test-Path $lib)) { return $null }
+    $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($lib))
+    $m = [regex]::Match($text, '\.NET(Framework|CoreApp),Version=v[0-9.]+')
+    if ($m.Success) { return $m.Value } else { return $null }
+}
+
+if (-not $Uninstall) {
+    $edition = Get-FanControlEdition $FanControlDir
+    if ($edition -like ".NETFramework*") {
+        throw @"
+This FanControl installation is the .NET Framework edition ($edition).
+FanControl.MCP targets .NET 10 and would break FanControl's sensor initialization if installed here.
+Install the .NET 10 build of FanControl from https://getfancontrol.com (keep a copy of
+Configurations\userConfig.json), then run this script again.
+"@
+    }
+    if ($edition) { Write-Host "FanControl edition: $edition" }
+    else { Write-Warning "Could not determine FanControl's target framework; continuing." }
+}
+
 $dll = Join-Path $root "src\FanControl.MCP\bin\Release\net10.0-windows10.0.22621.0\FanControl.MCP.dll"
 if (-not $Uninstall) {
     Write-Host "Building plugin..."

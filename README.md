@@ -35,7 +35,11 @@ AI client ──HTTP──▶ http://127.0.0.1:48620/mcp ──▶ FanControl.MC
 
 ## Quick start
 
-Requirements: FanControl V285+, [.NET 10 SDK](https://dotnet.microsoft.com/download) to build.
+Requirements: FanControl V285+ **.NET 10 edition**, [.NET 10 SDK](https://dotnet.microsoft.com/download) to build.
+
+> **.NET Framework edition is not supported.** FanControl is also distributed as a .NET Framework 4.8 build. It cannot load
+> this plugin, and the failed load aborts FanControl's whole sensor initialization (no fans, no temperatures). `install.ps1`
+> detects that edition and refuses to install; switch to the .NET 10 build of FanControl first.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1

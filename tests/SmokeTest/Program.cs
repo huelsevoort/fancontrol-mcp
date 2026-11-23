@@ -140,7 +140,7 @@ try
     var guideTool = await Rpc("tools/call", new JsonObject { ["name"] = "get_fan_curve_guide", ["arguments"] = new JsonObject() });
     Check("get_fan_curve_guide returns plain markdown", guideTool?["result"]?["content"]?[0]?["text"]?.GetValue<string>().StartsWith("# FanControl") == true);
 
-    if (remote is null) { AnalyzerTests(); WizardTests(); }
+    if (remote is null) { AnalyzerTests(); WizardTests(); RestoreMatchingTests(); }
 
     if (remote is not null && args.Contains("--elicit")) await ElicitationTest();
 
@@ -437,6 +437,8 @@ void AnalyzerTests()
           {"name":"CPU raw","type":"GraphFanCurve","currentOutput":50,"config":{"points":[{"x":40,"y":0},{"x":95,"y":90}],"selectedTempSource":"/amdcpu/0/temperature/2","hysteresisConfig":{"hysteresisValueUp":0,"hysteresisValueDown":0,"responseTimeUp":0,"responseTimeDown":0,"ignoreHysteresisAtLimits":true}}},
           {"name":"Smooth","type":"GraphFanCurve","currentOutput":40,"config":{"points":[{"x":40,"y":30},{"x":60,"y":20},{"x":85,"y":100}],"selectedTempSource":"Time/CPU Avg.","hysteresisConfig":{"hysteresisValueUp":2,"hysteresisValueDown":2,"responseTimeUp":3,"responseTimeDown":5,"ignoreHysteresisAtLimits":true}}},
           {"name":"Unused","type":"FlatFanCurve","config":{"percent":50}},
+          {"name":"Auto floor","type":"AutoFanCurve","currentOutput":30,"config":{"selectedTempSource":"Time/CPU Avg.","step":2,"deadband":5,"selectedResponseTime":5,"minFanSpeed":30,"maxFanSpeed":100,"loadTemperature":70,"idleTemperature":35}},
+          {"name":"Auto zero","type":"AutoFanCurve","currentOutput":0,"config":{"selectedTempSource":"Time/CPU Avg.","step":2,"deadband":5,"selectedResponseTime":5,"minFanSpeed":0,"maxFanSpeed":100,"loadTemperature":70,"idleTemperature":35}},
           {"name":"Gone source","type":"GraphFanCurve","config":{"points":[{"x":30,"y":30},{"x":80,"y":100}],"selectedTempSource":"/does/not/exist","hysteresisConfig":{"hysteresisValueUp":2,"hysteresisValueDown":2,"responseTimeUp":3,"responseTimeDown":3,"ignoreHysteresisAtLimits":true}}}
         ]
         """)!.AsArray();
@@ -445,7 +447,9 @@ void AnalyzerTests()
           {"id":"c/cpu","name":"CPU","enabled":true,"manualControl":false,"fanCurve":"CPU raw","pairedFanSensorId":"f/1","stepUp":8,"stepDown":8,"start":16,"stop":7,"minimumPercent":0},
           {"id":"c/pump","name":"AIO Pump","enabled":true,"manualControl":true,"manualPercent":20,"fanCurve":"Smooth","pairedFanSensorId":"f/2","stepUp":8,"stepDown":8,"start":0,"stop":0},
           {"id":"c/rad","name":"Radiator Top","enabled":true,"manualControl":false,"fanCurve":"Smooth","pairedFanSensorId":"f/3","stepUp":5,"stepDown":20,"start":20,"stop":25},
-          {"id":"c/case","name":"Intake Front","enabled":true,"manualControl":false,"fanCurve":"Gone source","stepUp":8,"stepDown":4,"start":10,"stop":5}
+          {"id":"c/case","name":"Intake Front","enabled":true,"manualControl":false,"fanCurve":"Gone source","stepUp":8,"stepDown":4,"start":10,"stop":5},
+          {"id":"c/cpu2","name":"CPU Fan 2","enabled":true,"manualControl":false,"fanCurve":"Auto floor","pairedFanSensorId":"f/5","stepUp":8,"stepDown":4,"start":0,"stop":0,"minimumPercent":0},
+          {"id":"c/rad2","name":"Radiator Bottom","enabled":true,"manualControl":false,"fanCurve":"Auto zero","pairedFanSensorId":"f/6","stepUp":8,"stepDown":4,"start":0,"stop":0,"minimumPercent":0}
         ]
         """)!.AsArray();
 
@@ -467,9 +471,36 @@ void AnalyzerTests()
     Check("analyzer: missing source", HasCode("SOURCE_MISSING", "curve 'Gone source'"));
     Check("analyzer: not paired", HasCode("NOT_PAIRED", "control 'Intake Front'"));
     Check("analyzer: unused curve", HasCode("CURVE_UNUSED", "curve 'Unused'"));
+    Check("analyzer: auto curve floor respected", !HasCode("ZERO_RPM_CRITICAL", "control 'CPU Fan 2'"));
+    Check("analyzer: auto curve at 0 % flagged", HasCode("ZERO_RPM_CRITICAL", "control 'Radiator Bottom'"));
     Check("analyzer: critical first", result["findings"]![0]!["severity"]!.GetValue<string>() == "critical");
     if (failures > 0) Console.WriteLine(string.Join("\n", codes));
 }
+
+// Restore points must survive FanControl rebuilding its objects (config load / "discard changes"):
+// snapshot entries are matched to live objects by key, not by reference.
+void RestoreMatchingTests()
+{
+    var oldA = new Keyed("Time/CPU avg"); var oldB = new Keyed("Radiator");
+    var rebuiltA = new Keyed("Time/CPU avg"); var rebuiltB = new Keyed("radiator"); var other = new Keyed("GPU");
+    Func<object?, string?> key = o => (o as Keyed)?.Key;
+
+    var live = new List<object> { rebuiltA, rebuiltB, other };
+    Check("restore: rebuilt object found by key", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(live, oldA, "Time/CPU avg", key), rebuiltA));
+    Check("restore: key match ignores case", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(live, oldB, "Radiator", key), rebuiltB));
+    var liveWithOld = new List<object> { rebuiltA, oldA };
+    Check("restore: same reference preferred", ReferenceEquals(FanControl.MCP.Engine.EngineBridge.FindLive(liveWithOld, oldA, "Time/CPU avg", key), oldA));
+    Check("restore: missing object -> null (recreate)", FanControl.MCP.Engine.EngineBridge.FindLive([other], oldA, "Time/CPU avg", key) is null);
+
+    Check("restore: curve kind from class name", FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new GraphFanCurve(), "FanCurve", out var k1) && k1 == TestKind.Graph);
+    Check("restore: sensor kind from class name", FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new TimeAverageSensor(), "Sensor", out var k2) && k2 == TestKind.TimeAverage);
+    Check("restore: unknown kind rejected", !FanControl.MCP.Engine.EngineBridge.TryParseKind<TestKind>(new Keyed("x"), "Sensor", out _));
+}
+
+sealed record Keyed(string Key);
+enum TestKind { Graph, TimeAverage }
+sealed class GraphFanCurve;
+sealed class TimeAverageSensor;
 
 sealed class Container : IPluginSensorsContainer
 {
